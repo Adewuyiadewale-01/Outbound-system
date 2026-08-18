@@ -1,0 +1,46 @@
+# Operating-system and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Python artifacts and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node/Electron artifacts
+node_modules/
+dist/
+out/
+*.app/
+.playwright-cli/
+
+# Local credentials, settings, and browser sessions
+.env
+.env.*
+!.env.example
+credentials/
+.openclaw
+.claude/settings.local.json
+.codex-context/
+state/
+**/browser-profile/
+**/.chatgpt-manual-profile/
+
+# Generated operational data and personally identifiable lead data
+debug/
+output/
+sent_invitations_export.csv
+scripts/mobile_lead_app/chatgpt_research_workflow/output/
+scripts/mobile_lead_app/fff
+scripts/mobile_lead_app/gggg
+scripts/mobile_lead_app/ffff.html
+ORCHESTRATION/watcher/com.tonyisbuiding.orchestration-watcher.plist
+
+# Logs, snapshots, and temporary files
+*.log
+*.tmp
+*.bak

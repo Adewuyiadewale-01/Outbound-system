@@ -1,0 +1,290 @@
+<script>
+  const Messaging = (() => {
+    const state = {
+      loading: false,
+      regenerating: false,
+      entries: [],
+      templates: [],
+      activeDraft: null,
+    };
+    const els = {
+      list: document.getElementById('messagingList'),
+      totalCount: document.getElementById('messagingTotalCount'),
+      draftedCount: document.getElementById('messagingResearchedCount'),
+      pendingCount: document.getElementById('messagingPendingCount'),
+      regenerateButton: document.getElementById('messagingRegenerateButton'),
+    };
+
+    function init() {}
+
+    function load() {
+      if (state.loading) return;
+      if (!Shell.canUseAppsScript()) {
+        els.list.innerHTML = '<div class="empty">Open the deployed web app to load Messaging.</div>';
+        updateStats({ total: 0, drafted: 0, pending: 0 });
+        return;
+      }
+
+      state.loading = true;
+      Shell.setLoading(true);
+      els.list.innerHTML = '<div class="empty">Loading Messaging...</div>';
+      google.script.run
+        .withSuccessHandler((payload) => {
+          state.loading = false;
+          Shell.setLoading(false);
+          state.entries = payload.entries || [];
+          state.templates = payload.templates || [];
+          updateStats(payload.counts || {});
+          Shell.setSubtitle(payload.messagingTabName || 'Messaging');
+          render();
+        })
+        .withFailureHandler((error) => {
+          state.loading = false;
+          Shell.setLoading(false);
+          els.list.innerHTML = '<div class="empty">Could not load Messaging.</div>';
+          Shell.setStatus(error && error.message ? error.message : 'Could not load Messaging', true);
+        })
+        .getMessagingPayload({});
+    }
+
+    function updateStats(counts) {
+      els.totalCount.textContent = counts.total || 0;
+      els.draftedCount.textContent = counts.drafted || 0;
+      els.pendingCount.textContent = counts.pending || 0;
+    }
+
+    function render() {
+      if (!state.entries.length) {
+        els.list.innerHTML = '<div class="empty">No new connected leads found.</div>';
+        return;
+      }
+      els.list.innerHTML = `
+        <div class="message-draft-list">
+          ${state.entries.map(renderEntry).join('')}
+        </div>
+        ${state.activeDraft ? renderDraftCanvas(state.activeDraft) : ''}
+      `;
+    }
+
+    function renderEntry(entry) {
+      return `
+        <article class="lead-card message-draft-card" data-prospect-id="${Shell.escapeAttr(entry.prospectId)}">
+          <div class="firm-row message-draft-row">
+            <div class="firm-link">
+              <span>${Shell.escapeHtml(entry.company || 'Unnamed prospect')}</span>
+              <small>${Shell.escapeHtml(entry.contactName || '')}</small>
+            </div>
+            <button class="message-write-button draft-message-button" type="button" data-prospect-id="${Shell.escapeAttr(entry.prospectId)}" aria-label="Draft message for ${Shell.escapeAttr(entry.contactName || entry.company || 'lead')}">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 20h9"/>
+                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+              </svg>
+            </button>
+          </div>
+          <div class="message-draft-meta">
+            <div class="field-shell">
+              <div class="field-label">Linkedin:</div>
+              ${renderLinkedIn(entry.contactLinkedin)}
+            </div>
+            ${entry.drafted ? `<span class="message-draft-pill">${Shell.escapeHtml(entry.draftTemplateId || 'Drafted')}</span>` : ''}
+          </div>
+        </article>
+      `;
+    }
+
+    function renderLinkedIn(url) {
+      if (!url) return '<div class="readonly-field">Nil</div>';
+      return `<a class="linkedin-field" href="${Shell.escapeAttr(url)}" target="_blank" rel="noopener">${Shell.escapeHtml(url)}</a>`;
+    }
+
+    function renderDraftCanvas(draft) {
+      const lead = draft.lead || {};
+      const title = draft.loading ? 'Generating message' : 'Generated Outreach Template';
+      const subtitle = draft.loading
+        ? `Preparing copy for ${lead.contactName || lead.company || 'this lead'}`
+        : `Ready for ${lead.contactName || lead.company || 'this lead'}`;
+      return `
+        <div class="message-draft-overlay" role="dialog" aria-modal="true" aria-label="Draft message">
+          <section class="message-draft-canvas">
+            <div class="message-draft-canvas-head">
+              <div class="message-draft-title-wrap">
+                <h2>${Shell.escapeHtml(title)}</h2>
+                <p>${Shell.escapeHtml(subtitle)}</p>
+              </div>
+              <div class="message-draft-canvas-actions">
+                <button class="primary action-button" id="copyDraftButton" type="button" ${draft.loading ? 'disabled' : ''}>
+                  <span class="button-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </span>
+                  Copy
+                </button>
+                <button class="action-button" id="closeDraftButton" type="button">Close</button>
+              </div>
+            </div>
+            <div class="message-draft-context">
+              <span>${Shell.escapeHtml(lead.company || '')}</span>
+              ${renderTemplateSelect(draft)}
+            </div>
+            ${draft.loading ? `
+              <div class="message-draft-generating">
+                <span class="spinner"></span>
+                <span>Generating...</span>
+              </div>
+            ` : `
+              <textarea class="message-draft-textarea" id="messageDraftText">${Shell.escapeHtml(draft.message || '')}</textarea>
+            `}
+          </section>
+        </div>
+      `;
+    }
+
+    function renderTemplateSelect(draft) {
+      const templates = state.templates || [];
+      if (!templates.length) {
+        return draft.templateId ? `<span>${Shell.escapeHtml(draft.templateId)}</span>` : '';
+      }
+      const selected = draft.templateId || '';
+      const options = templates.map((template) => {
+        const id = template.templateId || '';
+        return `<option value="${Shell.escapeAttr(id)}" ${id === selected ? 'selected' : ''}>${Shell.escapeHtml(id)}</option>`;
+      }).join('');
+      return `
+        <label class="message-template-select-wrap">
+          <span>Template</span>
+          <select class="message-template-select" id="messageTemplateSelect" ${draft.loading ? 'disabled' : ''}>
+            ${options}
+          </select>
+        </label>
+      `;
+    }
+
+    function openDraftCanvas(prospectId) {
+      const entry = state.entries.find((item) => item.prospectId === prospectId);
+      state.activeDraft = {
+        loading: true,
+        prospectId,
+        lead: entry || {},
+        message: '',
+        templateId: entry ? entry.draftTemplateId || '' : '',
+      };
+      render();
+      draftMessage(prospectId, state.activeDraft.templateId, false);
+    }
+
+    function draftMessage(prospectId, templateId, forceRedraft) {
+      Shell.setStatus('Drafting', false);
+      Shell.setBusy(true);
+      google.script.run
+        .withSuccessHandler((result) => {
+          Shell.setBusy(false);
+          state.activeDraft = Object.assign({}, result, { loading: false });
+          const entry = state.entries.find((item) => item.prospectId === prospectId);
+          if (entry) {
+            entry.drafted = true;
+            entry.draftTemplateId = result.templateId || '';
+            entry.draftMessage = result.message || '';
+            entry.draftedAt = result.draftedAt || '';
+          }
+          Shell.setStatus(result.reused ? 'Draft loaded' : 'Draft created', false);
+          render();
+        })
+        .withFailureHandler((error) => {
+          Shell.setBusy(false);
+          state.activeDraft = null;
+          render();
+          Shell.setStatus(error && error.message ? error.message : 'Could not draft message', true);
+        })
+        .draftMessagingMessage(prospectId, templateId || '', Boolean(forceRedraft));
+    }
+
+    function regenerateQueue() {
+      if (state.regenerating || Shell.isBusy()) return;
+      if (!Shell.canUseAppsScript()) {
+        Shell.setStatus('Open the deployed web app to regenerate Messaging.', true);
+        return;
+      }
+      state.regenerating = true;
+      Shell.setBusy(true);
+      Shell.setStatus('Regenerating queue', false);
+      google.script.run
+        .withSuccessHandler((payload) => {
+          state.regenerating = false;
+          Shell.setBusy(false);
+          state.entries = payload.entries || [];
+          state.templates = payload.templates || state.templates || [];
+          state.activeDraft = null;
+          updateStats(payload.counts || {});
+          Shell.setStatus(`Regenerated ${state.entries.length} assignment${state.entries.length === 1 ? '' : 's'}`, false);
+          render();
+        })
+        .withFailureHandler((error) => {
+          state.regenerating = false;
+          Shell.setBusy(false);
+          Shell.setStatus(error && error.message ? error.message : 'Could not regenerate queue', true);
+        })
+        .regenerateMessagingQueue();
+    }
+
+    function copyDraft() {
+      const textarea = document.getElementById('messageDraftText');
+      if (!textarea) return;
+      textarea.focus();
+      textarea.select();
+      const text = textarea.value;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+          .then(() => Shell.setStatus('Copied', false))
+          .catch(() => {
+            document.execCommand('copy');
+            Shell.setStatus('Copied', false);
+          });
+      } else {
+        document.execCommand('copy');
+        Shell.setStatus('Copied', false);
+      }
+    }
+
+    document.addEventListener('click', (event) => {
+      const draftButton = event.target.closest('.draft-message-button');
+      if (draftButton && els.list.contains(draftButton)) {
+        openDraftCanvas(draftButton.dataset.prospectId || '');
+        return;
+      }
+      if (event.target.closest('#copyDraftButton')) {
+        copyDraft();
+        return;
+      }
+      if (event.target.closest('#closeDraftButton')) {
+        state.activeDraft = null;
+        render();
+      }
+    });
+
+    document.addEventListener('change', (event) => {
+      if (event.target && event.target.id === 'messageTemplateSelect') {
+        const prospectId = state.activeDraft ? state.activeDraft.prospectId : '';
+        const templateId = event.target.value || '';
+        if (!prospectId || !templateId) return;
+        state.activeDraft = Object.assign({}, state.activeDraft, {
+          loading: true,
+          templateId,
+          message: '',
+        });
+        render();
+        draftMessage(prospectId, templateId, true);
+      }
+    });
+
+    if (els.regenerateButton) {
+      els.regenerateButton.addEventListener('click', regenerateQueue);
+    }
+
+    function updateControls() {
+      if (els.regenerateButton) {
+        els.regenerateButton.disabled = Shell.isBusy() || state.loading || state.regenerating;
+      }
+    }
+
+    return { init, load, updateControls };
+  })();
+</script>

@@ -1,0 +1,180 @@
+<script>
+  const LeadReview = (() => {
+    const state = {
+      leads: [],
+      useValues: ['', 'Potential leads', 'Case study worthy', 'Not bad, Not good', 'Not a lead', 'Exclude'],
+    };
+    let els = null;
+
+    function init() {
+      els = {
+        reviewList: document.getElementById('reviewList'),
+        saveButton: document.getElementById('saveReviewButton'),
+        availableCount: document.getElementById('reviewAvailableCount'),
+        approvedCount: document.getElementById('reviewApprovedCount'),
+        groupValue: document.getElementById('reviewGroupValue'),
+      };
+      els.saveButton.addEventListener('click', save);
+    }
+
+    function load() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setLoading(false);
+        Shell.setStatus('Local preview only. Use the deployed web app to load review data.', false);
+        els.reviewList.innerHTML = '<div class="empty">Open the deployed Apps Script web app to load the review queue.</div>';
+        return;
+      }
+      Shell.setLoading(true);
+      Shell.setStatus('Loading', false);
+      els.reviewList.innerHTML = '<div class="empty">Loading review queue...</div>';
+      google.script.run
+        .withSuccessHandler((payload) => {
+          state.leads = payload.leads || [];
+          state.useValues = payload.useValues || state.useValues;
+          Shell.setSubtitle(payload.reviewTabName || 'Lead Review');
+          els.groupValue.textContent = Shell.shortGroup(payload.groupDate);
+          updateStats();
+          Shell.setLoading(false);
+          Shell.setStatus('', false);
+          render();
+        })
+        .withFailureHandler((error) => {
+          Shell.setLoading(false);
+          Shell.setStatus(error.message || String(error), true);
+          els.reviewList.innerHTML = '<div class="empty">Could not load review queue.</div>';
+        })
+        .getReviewPayload();
+    }
+
+    function updateStats() {
+      const approved = state.leads.filter((lead) => lead.approved).length;
+      els.availableCount.textContent = state.leads.length || 0;
+      els.approvedCount.textContent = approved;
+    }
+
+    function render() {
+      if (!state.leads.length) {
+        els.reviewList.innerHTML = '<div class="empty">No review leads found.</div>';
+        return;
+      }
+      els.reviewList.innerHTML = state.leads.map(renderLead).join('');
+      bindControls();
+    }
+
+    function renderLead(lead) {
+      return `
+        <article class="lead-card ${lead.approved ? 'is-approved' : ''}" data-row="${Shell.escapeAttr(lead.rowNumber)}">
+          <div class="firm-row">
+            ${renderFirm(lead)}
+            <div class="lead-id">ID:${Shell.escapeHtml(Shell.shortLeadId(lead.runId))}</div>
+          </div>
+          <div class="review-body">
+            <div class="review-field-grid">
+              <div class="field-shell">
+                <div class="field-label">Emp count:</div>
+                <div class="readonly-field">${Shell.escapeHtml(lead.empCount || '')}</div>
+              </div>
+              <div class="field-shell">
+                <div class="field-label">Use:</div>
+                ${renderUseSelect(lead)}
+              </div>
+            </div>
+            <div class="approval-row">
+              <div class="approve-label">Approved</div>
+              <input class="approve-toggle" type="checkbox" data-row="${Shell.escapeAttr(lead.rowNumber)}" ${lead.approved ? 'checked' : ''}>
+            </div>
+          </div>
+        </article>
+      `;
+    }
+
+    function renderFirm(lead) {
+      const label = Shell.escapeHtml(lead.company || lead.runId || 'Unnamed lead');
+      if (!lead.website) {
+        return `<div class="firm-link"><span>${label}</span></div>`;
+      }
+      return `<a class="firm-link" href="${Shell.escapeAttr(lead.website)}" target="_blank" rel="noopener"><span>${label}</span></a>`;
+    }
+
+    function renderUseSelect(lead) {
+      const value = lead.use || '';
+      const values = state.useValues.indexOf(value) === -1
+        ? state.useValues.concat(value)
+        : state.useValues;
+      const options = values.map((item) => {
+        const label = item || 'Blank';
+        const selected = item === value ? 'selected' : '';
+        return `<option value="${Shell.escapeAttr(item)}" ${selected}>${Shell.escapeHtml(label)}</option>`;
+      }).join('');
+      return `<select class="use-field" data-row="${Shell.escapeAttr(lead.rowNumber)}">${options}</select>`;
+    }
+
+    function bindControls() {
+      els.reviewList.querySelectorAll('.approve-toggle').forEach((checkbox) => {
+        checkbox.addEventListener('change', () => {
+          const card = checkbox.closest('.lead-card');
+          card.classList.toggle('is-approved', checkbox.checked);
+          const lead = state.leads.find((item) => Number(item.rowNumber) === Number(checkbox.dataset.row));
+          if (lead) lead.approved = checkbox.checked;
+          updateStats();
+        });
+      });
+      els.reviewList.querySelectorAll('.use-field').forEach((select) => {
+        select.addEventListener('change', () => {
+          const lead = state.leads.find((item) => Number(item.rowNumber) === Number(select.dataset.row));
+          if (lead) lead.use = select.value;
+        });
+      });
+    }
+
+    function collectItems() {
+      return state.leads.map((lead) => {
+        const rowNumber = Number(lead.rowNumber);
+        const approved = Boolean(lead.approved);
+        const select = els.reviewList.querySelector(`.use-field[data-row="${rowNumber}"]`);
+        return {
+          rowNumber,
+          approved,
+          use: select ? select.value : lead.use || '',
+        };
+      }).filter((item) => Number.isInteger(item.rowNumber) && item.rowNumber > 1);
+    }
+
+    function save() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setStatus('Use the deployed web app to save approvals.', true);
+        return;
+      }
+      const items = collectItems();
+      if (!items.length) {
+        Shell.setStatus('No review rows to save', false);
+        return;
+      }
+      Shell.setBusy(true);
+      els.saveButton.classList.add('progressing');
+      els.saveButton.innerHTML = '<span class="spinner"></span><span>Save</span>';
+      Shell.setStatus('Saving approvals', false);
+      google.script.run
+        .withSuccessHandler((result) => {
+          Shell.setBusy(false);
+          els.saveButton.classList.remove('progressing');
+          els.saveButton.textContent = 'Save';
+          Shell.setStatus(`Saved ${result.processed || 0} rows, ${result.approvedCount || 0} approved`, false);
+        })
+        .withFailureHandler((error) => {
+          Shell.setBusy(false);
+          els.saveButton.classList.remove('progressing');
+          els.saveButton.textContent = 'Save';
+          Shell.setStatus(error.message || String(error), true);
+        })
+        .updateReviewApprovals(items);
+    }
+
+    function updateControls() {
+      if (!els) return;
+      els.saveButton.disabled = Shell.isBusy();
+    }
+
+    return { init, load, updateControls };
+  })();
+</script>

@@ -1,0 +1,339 @@
+<script>
+  const Pipeline = (() => {
+    const state = {
+      entries: [],
+      counts: { all: 0, overdue: 0, due_today: 0, upcoming: 0, done: 0 },
+      filter: 'active',
+      unpushedCount: 0,
+      dirty: new Map(),
+      progressOptions: [],
+      stageOptions: [],
+    };
+    let els = null;
+
+    function init() {
+      els = {
+        list: document.getElementById('pipelineList'),
+        filterSelect: document.getElementById('pipelineFilter'),
+        syncMessagingButton: document.getElementById('pipelineSyncMessagingButton'),
+        saveButton: document.getElementById('pipelineSaveButton'),
+        totalCount: document.getElementById('pipelineTotalCount'),
+        overdueCount: document.getElementById('pipelineOverdueCount'),
+        todayCount: document.getElementById('pipelineTodayCount'),
+        upcomingCount: document.getElementById('pipelineUpcomingCount'),
+      };
+      els.filterSelect.addEventListener('change', () => {
+        state.filter = els.filterSelect.value;
+        load();
+      });
+      els.syncMessagingButton.addEventListener('click', syncMessaging);
+      els.saveButton.addEventListener('click', save);
+    }
+
+    function load() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setLoading(false);
+        Shell.setStatus('Local preview only. Use the deployed web app to load Pipeline.', false);
+        els.list.innerHTML = '<div class="empty">Open the deployed Apps Script web app to load Pipeline.</div>';
+        return;
+      }
+      Shell.setLoading(true);
+      Shell.setStatus('Loading', false);
+      els.list.innerHTML = '<div class="empty">Loading Pipeline...</div>';
+      google.script.run
+        .withSuccessHandler((payload) => {
+          state.entries = payload.entries || [];
+          state.counts = payload.counts || state.counts;
+          state.filter = payload.filter || state.filter;
+          state.unpushedCount = payload.unpushedCount || 0;
+          state.progressOptions = payload.progressOptions || [];
+          state.stageOptions = payload.stageOptions || [];
+          state.dirty.clear();
+          els.filterSelect.value = state.filter;
+          Shell.setSubtitle(payload.pipelineTabName || 'Pipeline');
+          updateStats();
+          updateSyncButton();
+          updateSaveButton();
+          Shell.setLoading(false);
+          Shell.setStatus('', false);
+          render();
+        })
+        .withFailureHandler((error) => {
+          Shell.setLoading(false);
+          Shell.setStatus(error.message || String(error), true);
+          els.list.innerHTML = '<div class="empty">Could not load Pipeline.</div>';
+        })
+        .getPipelinePayload({ filter: state.filter });
+    }
+
+    function updateStats() {
+      els.totalCount.textContent = state.counts.all || 0;
+      els.overdueCount.textContent = state.counts.overdue || 0;
+      els.todayCount.textContent = state.counts.due_today || 0;
+      els.upcomingCount.textContent = state.counts.upcoming || 0;
+    }
+
+    function render() {
+      if (!state.entries.length) {
+        els.list.innerHTML = '<div class="empty">No Pipeline rows match this filter.</div>';
+        return;
+      }
+      els.list.innerHTML = state.entries.map(renderEntry).join('');
+      bindControls();
+    }
+
+    function renderEntry(entry) {
+      return `
+        <article class="lead-card" data-row="${Shell.escapeAttr(entry.rowNumber)}">
+          <div class="firm-row">
+            ${renderFirm(entry)}
+            <div class="lead-id">ID:${Shell.escapeHtml(Shell.shortLeadId(entry.prospectId))}</div>
+          </div>
+          ${renderDue(entry)}
+          <div class="prospect-controls">
+            <div class="field-shell">
+              <div class="field-label">Progress:</div>
+              ${renderProgressSelect(entry)}
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Last action:</div>
+              <div class="readonly-field">${Shell.escapeHtml(entry.lastActionDate || '')}</div>
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Next action:</div>
+              <div class="readonly-field">${Shell.escapeHtml(entry.nextAction || '')}</div>
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Due:</div>
+              <div class="readonly-field">${Shell.escapeHtml(entry.nextActionDue || '')}</div>
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Stage:</div>
+              ${renderStageSelect(entry)}
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Person:</div>
+              <div class="readonly-field">${Shell.escapeHtml(entry.personEngaged || '')}</div>
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Contact:</div>
+              <div class="readonly-field">${Shell.escapeHtml(entry.contactName || '')}</div>
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Linkedin:</div>
+              ${renderLinkedIn(entry)}
+            </div>
+          </div>
+        </article>
+      `;
+    }
+
+    function renderFirm(entry) {
+      const label = Shell.escapeHtml(entry.company || entry.prospectId || 'Unnamed prospect');
+      if (!entry.website) {
+        return `<div class="firm-link"><span>${label}</span></div>`;
+      }
+      return `<a class="firm-link" href="${Shell.escapeAttr(entry.website)}" target="_blank" rel="noopener"><span>${label}</span></a>`;
+    }
+
+    function renderDue(entry) {
+      const tone = entry.dueTone || 'blank';
+      if (tone === 'blank' && !entry.nextActionDue) return '';
+      const toneClass = tone === 'red' ? 'countdown-red' : tone === 'amber' ? 'countdown-amber' : tone === 'neutral' ? 'countdown-neutral' : 'countdown-green';
+      return `
+        <div class="countdown-row">
+          <span class="countdown-badge ${toneClass}">${Shell.escapeHtml(entry.dueLabel || 'No due date')}</span>
+          <span class="countdown-sent">${Shell.escapeHtml(entry.nextAction || '')}</span>
+        </div>
+      `;
+    }
+
+    function renderProgressSelect(entry) {
+      const current = entry.currentProgress || '';
+      const options = augmentOptions(toOptions(state.progressOptions), current).map((option) => {
+        const selected = option.value === current ? 'selected' : '';
+        return `<option value="${Shell.escapeAttr(option.value)}" ${selected}>${Shell.escapeHtml(option.label)}</option>`;
+      }).join('');
+      return `<select class="progress-select progress-${Shell.escapeAttr(entry.progressKey || classifyProgress(current))}" data-row="${Shell.escapeAttr(entry.rowNumber)}" data-field="currentProgress">${options}</select>`;
+    }
+
+    function renderStageSelect(entry) {
+      const current = entry.currentStage || '';
+      const options = augmentOptions(toOptions(state.stageOptions), current).map((option) => {
+        const selected = option.value === current ? 'selected' : '';
+        return `<option value="${Shell.escapeAttr(option.value)}" ${selected}>${Shell.escapeHtml(option.label)}</option>`;
+      }).join('');
+      return `<select class="progress-select" data-row="${Shell.escapeAttr(entry.rowNumber)}" data-field="currentStage">${options}</select>`;
+    }
+
+    function renderLinkedIn(entry) {
+      if (!entry.contactLinkedIn) {
+        return '<div class="readonly-field">Nil</div>';
+      }
+      return `<a class="linkedin-field" href="${Shell.escapeAttr(entry.contactLinkedIn)}" target="_blank" rel="noopener">${Shell.escapeHtml(entry.contactLinkedIn)}</a>`;
+    }
+
+    function toOptions(values) {
+      const options = (values || []).map((value) => ({
+        value,
+        label: value,
+      }));
+      return [{ value: '', label: 'Blank' }].concat(options);
+    }
+
+    function augmentOptions(baseOptions, currentValue) {
+      const exists = baseOptions.some((opt) => opt.value === currentValue);
+      if (exists) return baseOptions;
+      return baseOptions.concat([{ value: currentValue, label: currentValue || 'Blank' }]);
+    }
+
+    function bindControls() {
+      els.list.querySelectorAll('[data-field]').forEach((control) => {
+        control.addEventListener('change', () => {
+          const rowNumber = Number(control.dataset.row);
+          const field = control.dataset.field;
+          const entry = state.entries.find((item) => Number(item.rowNumber) === rowNumber);
+          if (!entry || !field) return;
+          entry[field] = control.value;
+          if (field === 'currentProgress') {
+            entry.progressKey = classifyProgress(control.value);
+            control.className = `progress-select progress-${entry.progressKey}`;
+            entry.lastActionDate = todayString();
+          }
+          markDirty(rowNumber, field, entry[field] || '');
+          updateSaveButton();
+        });
+      });
+    }
+
+    function markDirty(rowNumber, field, value) {
+      const patch = state.dirty.get(rowNumber) || { rowNumber };
+      patch[field] = value;
+      state.dirty.set(rowNumber, patch);
+    }
+
+    function classifyProgress(progress) {
+      const normalized = String(progress || '').trim().toLowerCase();
+      if (!normalized) return 'blank';
+      if (normalized === 'fail' || normalized === 'fu-10') return 'done';
+      if (normalized === 'connected') return 'connected';
+      if (normalized === 'first message' || normalized === 'first msg' || normalized === 'm1') return 'first_message';
+      if (/^fu[-\s]?\d+$/.test(normalized)) return 'follow_up';
+      return 'other';
+    }
+
+    function todayString() {
+      const now = new Date();
+      const pad = (value) => String(value).padStart(2, '0');
+      return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    }
+
+    function collectDirty() {
+      return Array.from(state.dirty.values());
+    }
+
+    function save() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setStatus('Use the deployed web app to save Pipeline updates.', true);
+        return;
+      }
+      const items = collectDirty();
+      if (!items.length) {
+        Shell.setStatus('No Pipeline changes to save', false);
+        return;
+      }
+      Shell.setBusy(true);
+      els.saveButton.classList.add('progressing');
+      els.saveButton.innerHTML = '<span class="spinner"></span><span>Save</span>';
+      Shell.setStatus(`Saving ${items.length} Pipeline update${items.length === 1 ? '' : 's'}`, false);
+      google.script.run
+        .withSuccessHandler((result) => {
+          Shell.setBusy(false);
+          els.saveButton.classList.remove('progressing');
+          els.saveButton.textContent = 'Save';
+          Shell.setStatus(`Saved ${result.processed || 0} Pipeline update${(result.processed || 0) === 1 ? '' : 's'}`, false);
+          state.dirty.clear();
+          updateSaveButton();
+          window.setTimeout(() => load(), 600);
+        })
+        .withFailureHandler((error) => {
+          Shell.setBusy(false);
+          els.saveButton.classList.remove('progressing');
+          els.saveButton.textContent = 'Save';
+          Shell.setStatus(error.message || String(error), true);
+        })
+        .updatePipeline(items);
+    }
+
+    function syncMessaging() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setStatus('Use the deployed web app to push Pipeline leads to Messaging.', true);
+        return;
+      }
+      const prospectIds = state.entries
+        .filter((entry) => !entry.messagingPushed)
+        .map((entry) => entry.prospectId)
+        .filter(Boolean);
+      if (!prospectIds.length) {
+        Shell.setStatus('No unpushed Pipeline leads for Messaging.', false);
+        return;
+      }
+      Shell.setBusy(true);
+      els.syncMessagingButton.classList.add('progressing');
+      els.syncMessagingButton.innerHTML = '<span class="spinner"></span><span>Push to Messaging</span>';
+      Shell.setStatus(`Pushing ${prospectIds.length} Pipeline lead${prospectIds.length === 1 ? '' : 's'} to Messaging`, false);
+      google.script.run
+        .withSuccessHandler((result) => {
+          Shell.setBusy(false);
+          els.syncMessagingButton.classList.remove('progressing');
+          if (result && result.ok === false) {
+            Shell.setStatus(result.message || 'Messaging sync did not run.', true);
+            updateControls();
+            return;
+          }
+          if (!result.missing) {
+            state.unpushedCount = 0;
+            state.entries.forEach((entry) => {
+              if (prospectIds.indexOf(entry.prospectId) !== -1) {
+                entry.messagingPushed = true;
+              }
+            });
+          }
+          updateSyncButton();
+          Shell.setStatus(`Messaging synced: ${result.inserted || 0} added, ${result.updated || 0} refreshed, ${result.skippedExisting || 0} unchanged, ${result.missing || 0} missing`, false);
+          updateControls();
+          window.setTimeout(() => load(), 600);
+        })
+        .withFailureHandler((error) => {
+          Shell.setBusy(false);
+          els.syncMessagingButton.classList.remove('progressing');
+          updateSyncButton();
+          Shell.setStatus(error.message || String(error), true);
+          updateControls();
+        })
+        .syncPipelineRowsToMessaging(prospectIds);
+    }
+
+    function updateSaveButton() {
+      if (!els || !els.saveButton) return;
+      const dirtyCount = state.dirty.size;
+      els.saveButton.textContent = dirtyCount > 0 ? `Save (${dirtyCount})` : 'Save';
+      els.saveButton.disabled = Shell.isBusy() || dirtyCount === 0;
+    }
+
+    function updateSyncButton() {
+      if (!els || !els.syncMessagingButton) return;
+      els.syncMessagingButton.textContent = `Push ${state.unpushedCount || 0} to Messaging`;
+    }
+
+    function updateControls() {
+      if (!els) return;
+      els.filterSelect.disabled = Shell.isBusy();
+      els.syncMessagingButton.disabled = Shell.isBusy() || !state.unpushedCount;
+      updateSyncButton();
+      updateSaveButton();
+    }
+
+    return { init, load, updateControls };
+  })();
+</script>

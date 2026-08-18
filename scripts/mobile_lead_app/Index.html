@@ -1,0 +1,1979 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Lead Activity">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#002B6C">
+    <style>
+      :root {
+        --bg: #F6FBFD;
+        --panel: #FFFFFF;
+        --ink: #000D26;
+        --muted: #88979D;
+        --line: #C4CBCE;
+        --stroke: rgba(136, 151, 157, 0.5);
+        --main: #002B6C;
+        --main-soft: rgba(142, 216, 250, 0.15);
+        --top: rgba(0, 87, 255, 0.05);
+        --danger: #B42318;
+        --danger-soft: rgba(244, 63, 94, 0.14);
+        --active-soft: rgba(20, 184, 166, 0.12);
+        --warm-active-soft: rgba(221, 115, 40, 0.13);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        background: var(--bg);
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: 0;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      button,
+      select,
+      input {
+        font: inherit;
+      }
+
+      button,
+      select {
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      select:focus,
+      button:focus {
+        outline: none;
+        box-shadow: none;
+      }
+
+      .app {
+        min-height: 100vh;
+        padding-bottom: calc(28px + env(safe-area-inset-bottom));
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        padding: calc(12px + env(safe-area-inset-top)) 12px 8px;
+        background: var(--top);
+        border-bottom: 0.3px solid rgba(196, 203, 206, 0.7);
+        backdrop-filter: blur(18px) saturate(180%);
+        -webkit-backdrop-filter: blur(18px) saturate(180%);
+      }
+
+      .top-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+        gap: 10px;
+        align-items: start;
+      }
+
+      .module-select-wrap {
+        min-width: 0;
+      }
+
+      .module-select {
+        max-width: 100%;
+        border: 0;
+        background: transparent;
+        color: var(--ink);
+        font-size: 19px;
+        line-height: 1.1;
+        font-weight: 800;
+        padding: 0 22px 0 0;
+      }
+
+      .subtitle {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .top-action {
+        height: 38px;
+        border: 0;
+        border-radius: 6px;
+        padding: 0 11px;
+        color: var(--ink);
+        background: rgba(0, 43, 108, 0.11);
+        font-size: 15px;
+        font-weight: 500;
+      }
+
+      .top-action.primary {
+        color: #FFFFFF;
+        background: var(--main);
+      }
+
+      .top-action.is-hidden,
+      .is-hidden {
+        display: none !important;
+      }
+
+      .top-action.progressing {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .bridge-wrap {
+        position: relative;
+      }
+
+      .bridge-menu {
+        position: absolute;
+        top: 44px;
+        right: 0;
+        min-width: 166px;
+        padding: 5px;
+        border: 0.3px solid var(--stroke);
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 10px 24px rgba(0, 13, 38, 0.16);
+        backdrop-filter: blur(18px) saturate(180%);
+        -webkit-backdrop-filter: blur(18px) saturate(180%);
+        display: none;
+      }
+
+      .bridge-menu.is-open {
+        display: grid;
+        gap: 4px;
+      }
+
+      .bridge-option {
+        width: 100%;
+        min-height: 34px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--ink);
+        text-align: left;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 0 9px;
+      }
+
+      .bridge-option:disabled {
+        color: rgba(136, 151, 157, 0.78);
+      }
+
+      .bridge-option:not(:disabled):active {
+        background: var(--main-soft);
+      }
+
+      .stats-strip {
+        display: grid;
+        gap: 8px;
+        justify-content: space-between;
+        margin-top: 9px;
+        padding: 9px 10px;
+        border-radius: 5px;
+        background: var(--main-soft);
+      }
+
+      .stats-strip.activity-stats {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+      }
+
+      .stats-strip.review-stats,
+      .stats-strip.sanitize-log-stats {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .stats-strip.manual-requests-stats {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .stats-strip.pipeline-stats {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .stats-strip.metrics-stats {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .stats-strip.messaging-stats {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .stat {
+        min-width: 0;
+        text-align: center;
+      }
+
+      .stat-label {
+        color: #52646D;
+        font-size: 12px;
+        line-height: 1.1;
+      }
+
+      .stat-value {
+        margin-top: 5px;
+        color: var(--ink);
+        font-size: 17px;
+        line-height: 1;
+        font-weight: 800;
+      }
+
+      .meta-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 18px;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .status.error {
+        color: var(--danger);
+      }
+
+      .lead-list {
+        display: grid;
+        gap: 6px;
+        padding: 12px;
+        max-width: 860px;
+        margin: 0 auto;
+      }
+
+      .lead-card {
+        background: var(--panel);
+        border: 0.3px solid var(--stroke);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      .messaging-list {
+        max-width: 760px;
+        height: auto;
+        min-height: 0;
+        grid-template-rows: none;
+      }
+
+      .messaging-tabs {
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+        scrollbar-width: thin;
+      }
+
+      .messaging-tab {
+        flex: 0 0 auto;
+        max-width: 220px;
+        min-width: 132px;
+        height: 36px;
+        border: 0.3px solid var(--stroke);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.84);
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 700;
+        padding: 0 10px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .messaging-tab.is-active {
+        border-color: rgba(0, 43, 108, 0.5);
+        background: var(--main);
+        color: #FFFFFF;
+      }
+
+      .messaging-panel {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        gap: 10px;
+      }
+
+      .messaging-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .messaging-field {
+        min-width: 0;
+        padding: 9px 10px;
+        border: 0.3px solid var(--stroke);
+        border-radius: 6px;
+        background: var(--panel);
+      }
+
+      .messaging-label {
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.1;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .messaging-value {
+        display: block;
+        min-width: 0;
+        margin-top: 5px;
+        color: var(--ink);
+        font-size: 13px;
+        line-height: 1.25;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-decoration: none;
+      }
+
+      .messaging-value.is-link {
+        color: var(--main);
+      }
+
+      .messaging-summary-meta {
+        display: none;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+      }
+
+      .messaging-summary {
+        min-height: 0;
+        padding: 14px;
+        border: 0.3px solid var(--stroke);
+        border-radius: 8px;
+        background: var(--panel);
+        overflow-y: auto;
+        color: #172236;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .messaging-summary.is-plain {
+        white-space: pre-wrap;
+      }
+
+      .messaging-summary h1,
+      .messaging-summary h2,
+      .messaging-summary h3 {
+        margin: 0 0 10px;
+        color: var(--ink);
+        line-height: 1.22;
+      }
+
+      .messaging-summary h1 {
+        font-size: 20px;
+      }
+
+      .messaging-summary h2 {
+        margin-top: 18px;
+        font-size: 16px;
+      }
+
+      .messaging-summary h3 {
+        margin-top: 14px;
+        font-size: 14px;
+      }
+
+      .messaging-summary p,
+      .messaging-summary ul,
+      .messaging-summary ol {
+        margin: 0 0 12px;
+      }
+
+      .messaging-summary ul,
+      .messaging-summary ol {
+        padding-left: 22px;
+      }
+
+      .messaging-summary a {
+        color: var(--main);
+      }
+
+      .firm-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 10px 8px;
+        border-bottom: 0.3px solid var(--line);
+      }
+
+      .firm-link {
+        min-width: 0;
+        color: var(--ink);
+        font-size: 16px;
+        line-height: 1.2;
+        font-weight: 500;
+        text-decoration: none;
+      }
+
+      .firm-link span {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .lead-id {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.1;
+        max-width: 104px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .person {
+        position: relative;
+        padding: 28px 10px 10px;
+      }
+
+      .person + .person {
+        border-top: 0.3px solid rgba(196, 203, 206, 0.55);
+      }
+
+      .person-label {
+        position: absolute;
+        top: 8px;
+        right: 10px;
+        display: inline-grid;
+        place-items: center;
+        min-width: 20px;
+        height: 16px;
+        padding: 0 4px;
+        border-radius: 1px;
+        background: var(--main);
+        color: #FFFFFF;
+        font-size: 11px;
+        line-height: 1;
+        font-weight: 800;
+      }
+
+      .field-label {
+        margin: 0 0 3px;
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.1;
+      }
+
+      .field-grid.identity-grid {
+        display: grid;
+        grid-template-columns: 65fr 35fr;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .field-grid.action-grid {
+        display: grid;
+        grid-template-columns: 75fr 25fr;
+        gap: 10px;
+        align-items: end;
+        margin-top: 8px;
+      }
+
+      .field-shell {
+        min-width: 0;
+      }
+
+      .readonly-field,
+      .activity,
+      .use-field {
+        width: 100%;
+        height: 26px;
+        min-width: 0;
+        border: 0.3px solid var(--line);
+        border-radius: 2px;
+        background: #FFFFFF;
+        color: #536173;
+        font-size: 12px;
+        line-height: 25px;
+        padding: 0 7px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .linkedin-field {
+        display: block;
+        width: 100%;
+        height: 26px;
+        min-width: 0;
+        border: 0;
+        border-radius: 2px;
+        background: rgba(0, 87, 255, 0.1);
+        color: var(--main);
+        font-size: 11px;
+        line-height: 26px;
+        padding: 0 7px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-decoration: none;
+      }
+
+      .linkedin-field.disabled {
+        pointer-events: none;
+        background: rgba(196, 203, 206, 0.2);
+        color: #87929A;
+      }
+
+      .activity {
+        color: var(--ink);
+        background-color: #FFFFFF;
+        padding-right: 4px;
+      }
+
+      .use-field {
+        color: var(--ink);
+        background-color: #FFFFFF;
+      }
+
+      .activity.is-very-active {
+        background-color: var(--active-soft);
+        color: #005A50;
+      }
+
+      .activity.is-active {
+        background-color: var(--warm-active-soft);
+        color: #7A3B08;
+      }
+
+      .activity.is-not-active {
+        background-color: var(--danger-soft);
+        color: #8A130D;
+      }
+
+      .review-body {
+        padding: 10px;
+      }
+
+      .review-field-grid {
+        display: grid;
+        grid-template-columns: 35fr 65fr;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .approval-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 0.3px solid rgba(196, 203, 206, 0.55);
+      }
+
+      .approve-label {
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .approve-toggle {
+        appearance: none;
+        width: 46px;
+        height: 26px;
+        border: 0;
+        border-radius: 999px;
+        background: rgba(136, 151, 157, 0.28);
+        position: relative;
+      }
+
+      .approve-toggle::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #FFFFFF;
+        box-shadow: 0 1px 3px rgba(0, 13, 38, 0.22);
+        transition: transform 0.16s ease;
+      }
+
+      .approve-toggle:checked {
+        background: var(--main);
+      }
+
+      .approve-toggle:checked::after {
+        transform: translateX(20px);
+      }
+
+      .lead-card.is-approved .review-body {
+        background: var(--main-soft);
+      }
+
+      .log-body {
+        padding: 10px;
+        display: grid;
+        gap: 6px;
+      }
+
+      .log-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .log-action {
+        display: inline-grid;
+        place-items: center;
+        min-width: 56px;
+        height: 20px;
+        padding: 0 8px;
+        border-radius: 3px;
+        color: #FFFFFF;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .log-action-swapped {
+        background: var(--main);
+      }
+
+      .log-action-moved {
+        background: var(--danger);
+      }
+
+      .log-time {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .log-detail {
+        color: var(--ink);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .log-detail-label {
+        color: var(--muted);
+      }
+
+      .log-arrow {
+        color: var(--main);
+        font-weight: 700;
+        padding: 0 4px;
+      }
+
+      .log-reason {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .filter-select {
+        width: 38px;
+        padding: 0;
+        color: transparent;
+        background-color: rgba(0, 43, 108, 0.11);
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000D26' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polygon points='22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3'/></svg>");
+        background-repeat: no-repeat;
+        background-position: center;
+        background-size: 16px 16px;
+        appearance: none;
+        -webkit-appearance: none;
+        text-align: center;
+        text-align-last: center;
+      }
+
+      .filter-select option {
+        color: var(--ink);
+      }
+
+      .prospect-controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        padding: 10px;
+        border-bottom: 0.3px solid rgba(196, 203, 206, 0.55);
+      }
+
+      .status-select,
+      .engaged-select,
+      .progress-select,
+      .outcome-select,
+      .date-input,
+      .touch-method-select {
+        width: 100%;
+        height: 26px;
+        min-width: 0;
+        border: 0.3px solid var(--line);
+        border-radius: 2px;
+        background: #FFFFFF;
+        color: var(--ink);
+        font-size: 12px;
+        line-height: 25px;
+        padding: 0 7px;
+      }
+
+      .date-input {
+        appearance: none;
+        -webkit-appearance: none;
+      }
+
+      .status-select.status-new {
+        background-color: rgba(136, 151, 157, 0.18);
+        color: var(--ink);
+      }
+
+      .status-select.status-connection_sent {
+        background-color: var(--warm-active-soft);
+        color: #7A3B08;
+      }
+
+      .status-select.status-connected {
+        background-color: var(--active-soft);
+        color: #005A50;
+      }
+
+      .status-select.status-other {
+        background-color: rgba(136, 151, 157, 0.28);
+        color: var(--ink);
+      }
+
+      .progress-select.progress-conn_request {
+        background-color: var(--warm-active-soft);
+        color: #7A3B08;
+      }
+
+      .progress-select.progress-connected {
+        background-color: var(--active-soft);
+        color: #005A50;
+      }
+
+      .progress-select.progress-withdrawn,
+      .progress-select.progress-not_interested {
+        background-color: var(--danger-soft);
+        color: #8A130D;
+      }
+
+      .progress-select.progress-other,
+      .progress-select.progress-blank,
+      .progress-select.progress-first_message,
+      .progress-select.progress-follow_up {
+        background-color: rgba(136, 151, 157, 0.18);
+        color: var(--ink);
+      }
+
+      .outreach-search-dock {
+        position: fixed;
+        right: 16px;
+        left: auto;
+        bottom: calc(18px + env(safe-area-inset-bottom));
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        width: 52px;
+        height: 52px;
+        border: 0.5px solid rgba(255, 255, 255, 0.7);
+        border-radius: 999px;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.34));
+        box-shadow:
+          0 12px 30px rgba(0, 13, 38, 0.18),
+          inset 0 1px 0 rgba(255, 255, 255, 0.75),
+          inset 0 -1px 0 rgba(255, 255, 255, 0.25);
+        backdrop-filter: blur(26px) saturate(190%);
+        -webkit-backdrop-filter: blur(26px) saturate(190%);
+        overflow: hidden;
+        transition: width 0.22s ease, left 0.22s ease, right 0.22s ease, background 0.22s ease, border-color 0.22s ease;
+      }
+
+      .outreach-search-dock.is-open {
+        left: 20px;
+        right: 20px;
+        width: auto;
+        max-width: calc(100dvw - 40px);
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.46));
+        border-color: rgba(255, 255, 255, 0.78);
+      }
+
+      .outreach-search-input {
+        flex: 0 1 0;
+        width: 0;
+        min-width: 0;
+        height: 100%;
+        border: 0;
+        background: transparent;
+        color: var(--ink);
+        font-size: 16px;
+        font-weight: 650;
+        opacity: 0;
+        padding: 0;
+        transition: flex-basis 0.22s ease, opacity 0.14s ease, padding 0.22s ease;
+      }
+
+      .outreach-search-dock.is-open .outreach-search-input {
+        flex: 1 1 auto;
+        width: auto;
+        opacity: 1;
+        padding: 0 6px 0 16px;
+      }
+
+      .outreach-search-input::placeholder {
+        color: rgba(82, 100, 109, 0.82);
+      }
+
+      .outreach-search-input:focus {
+        outline: none;
+        box-shadow: none;
+      }
+
+      .outreach-search-button,
+      .outreach-search-clear {
+        flex: 0 0 52px;
+        width: 52px;
+        height: 52px;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        color: var(--main);
+        display: inline-grid;
+        place-items: center;
+      }
+
+      .outreach-search-clear {
+        flex-basis: 36px;
+        width: 36px;
+        color: var(--muted);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.14s ease;
+      }
+
+      .outreach-search-dock.is-open.has-query .outreach-search-clear {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      #manualRequestsList.is-guarded {
+        position: relative;
+        min-height: calc(100vh - 168px);
+      }
+
+      .manual-guard-overlay {
+        position: fixed;
+        inset: var(--manual-guard-top, 168px) 0 0;
+        z-index: 9;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: rgba(246, 251, 253, 0.29);
+        backdrop-filter: blur(22px) saturate(180%);
+        -webkit-backdrop-filter: blur(22px) saturate(180%);
+      }
+
+      .manual-guard-panel {
+        display: grid;
+        gap: 10px;
+        width: min(320px, 100%);
+        padding: 16px;
+        border: 0.5px solid rgba(255, 255, 255, 0.72);
+        border-radius: 8px;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.46));
+        box-shadow: 0 14px 34px rgba(0, 13, 38, 0.16);
+        text-align: center;
+      }
+
+      .manual-guard-title {
+        color: var(--ink);
+        font-size: 15px;
+        line-height: 1.25;
+        font-weight: 850;
+      }
+
+      .manual-guard-text {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .manual-guard-button {
+        min-height: 40px;
+        border: 0;
+        border-radius: 6px;
+        background: var(--main);
+        color: #FFFFFF;
+        font-size: 14px;
+        font-weight: 750;
+      }
+
+      .countdown-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 10px 0;
+      }
+
+      .countdown-badge {
+        display: inline-grid;
+        place-items: center;
+        height: 22px;
+        padding: 0 10px;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .countdown-green {
+        background-color: var(--active-soft);
+        color: #005A50;
+      }
+
+      .countdown-amber {
+        background-color: var(--warm-active-soft);
+        color: #7A3B08;
+      }
+
+      .countdown-red {
+        background-color: var(--danger-soft);
+        color: #8A130D;
+      }
+
+      .countdown-neutral {
+        background-color: rgba(136, 151, 157, 0.18);
+        color: var(--ink);
+      }
+
+      .countdown-sent {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .metrics-grid {
+        display: grid;
+        gap: 8px;
+      }
+
+      .metrics-date-select {
+        width: 38px;
+        height: 38px;
+        border: 0;
+        border-radius: 6px;
+        background-color: rgba(0, 43, 108, 0.11);
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000D26' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M8 2v4'/><path d='M16 2v4'/><rect x='3' y='4' width='18' height='18' rx='2'/><path d='M3 10h18'/></svg>");
+        background-repeat: no-repeat;
+        background-position: center;
+        background-size: 16px 16px;
+        color: transparent;
+        font-size: 13px;
+        font-weight: 750;
+        padding: 0;
+        appearance: none;
+        -webkit-appearance: none;
+        text-align: center;
+        text-align-last: center;
+      }
+
+      .metrics-date-select option {
+        color: var(--ink);
+      }
+
+      .metrics-period-select {
+        min-width: 76px;
+        height: 38px;
+        border: 0;
+        border-radius: 6px;
+        background: rgba(0, 43, 108, 0.11);
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 700;
+        padding: 0 8px;
+      }
+
+      #metricsList {
+        width: 100%;
+        max-width: none;
+        height: calc(100dvh - var(--metrics-list-top, 0px));
+        min-height: 0;
+        gap: 0;
+        padding: 0 0 10px;
+      }
+
+      .metrics-table-card {
+        overflow: hidden;
+        height: 100%;
+        background: var(--panel);
+        border: 0.3px solid var(--stroke);
+        border-radius: 0;
+      }
+
+      .metrics-table-grid {
+        display: grid;
+        height: 100%;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-rows: repeat(4, minmax(0, 1fr));
+      }
+
+      .metrics-table-grid.metrics-weekly-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-rows: repeat(6, minmax(0, 1fr));
+      }
+
+      .metrics-table-cell {
+        display: grid;
+        grid-template-rows: 63px minmax(0, 1fr);
+        min-width: 0;
+        border-right: 0.3px solid var(--stroke);
+        border-bottom: 0.3px solid var(--stroke);
+        background: #FFFFFF;
+      }
+
+      .metrics-table-cell:nth-child(4n) {
+        border-right: 0;
+      }
+
+      .metrics-table-cell:nth-last-child(-n + 4) {
+        border-bottom: 0;
+      }
+
+      .metrics-weekly-grid .metrics-table-cell:nth-child(4n) {
+        border-right: 0.3px solid var(--stroke);
+      }
+
+      .metrics-weekly-grid .metrics-table-cell:nth-last-child(-n + 4) {
+        border-bottom: 0.3px solid var(--stroke);
+      }
+
+      .metrics-weekly-grid .metrics-table-cell:nth-child(3n) {
+        border-right: 0;
+      }
+
+      .metrics-weekly-grid .metrics-table-cell:nth-last-child(-n + 3) {
+        border-bottom: 0;
+      }
+
+      .metrics-table-head {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px;
+        background: var(--active-soft);
+        color: #005A50;
+        font-size: 11px;
+        font-weight: 850;
+        line-height: 1.15;
+        text-align: center;
+      }
+
+      .metrics-table-value {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px 8px;
+        color: var(--ink);
+        font-size: 18px;
+        line-height: 1.1;
+        font-weight: 850;
+        text-align: center;
+        overflow-wrap: anywhere;
+      }
+
+      .metrics-table-input {
+        width: 100%;
+        max-width: 92px;
+        min-width: 0;
+        height: 42px;
+        border: 0.3px solid var(--line);
+        border-radius: 4px;
+        background: #FFFFFF;
+        color: var(--ink);
+        font-size: 18px;
+        line-height: 1;
+        font-weight: 850;
+        text-align: center;
+        padding: 0 6px;
+      }
+
+      .metrics-table-input:focus {
+        border-color: var(--main);
+        box-shadow: 0 0 0 2px rgba(0, 43, 108, 0.12);
+      }
+
+      .metric-panel {
+        padding: 12px;
+        background: var(--panel);
+        border: 0.3px solid var(--stroke);
+        border-radius: 8px;
+      }
+
+      .metric-title {
+        color: var(--ink);
+        font-size: 14px;
+        font-weight: 800;
+        line-height: 1.2;
+      }
+
+      .metric-value {
+        margin-top: 8px;
+        color: var(--main);
+        font-size: 28px;
+        line-height: 1;
+        font-weight: 850;
+      }
+
+      .metric-note {
+        margin-top: 7px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .metric-bars {
+        display: grid;
+        gap: 7px;
+        margin-top: 10px;
+      }
+
+      .metric-bar {
+        display: grid;
+        grid-template-columns: 86px minmax(0, 1fr) 34px;
+        gap: 8px;
+        align-items: center;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .metric-bar-track {
+        height: 7px;
+        border-radius: 999px;
+        background: rgba(136, 151, 157, 0.18);
+        overflow: hidden;
+      }
+
+      .metric-bar-fill {
+        height: 100%;
+        border-radius: inherit;
+        background: var(--main);
+      }
+
+      .message-draft-list {
+        display: grid;
+        gap: 12px;
+        width: 100%;
+      }
+
+      .message-draft-card {
+        overflow: visible;
+      }
+
+      .message-draft-row {
+        grid-template-columns: minmax(0, 1fr) 44px;
+        min-height: 64px;
+        border-bottom: 0;
+      }
+
+      .message-draft-row .firm-link {
+        display: grid;
+        gap: 4px;
+      }
+
+      .message-draft-row .firm-link small {
+        display: block;
+        min-width: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.2;
+        font-weight: 650;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .message-write-button {
+        display: inline-grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--main);
+        color: #FFFFFF;
+        box-shadow: 0 8px 18px rgba(0, 43, 108, 0.18);
+      }
+
+      .message-write-button svg {
+        width: 19px;
+        height: 19px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .message-write-button:active {
+        transform: translateY(1px);
+      }
+
+      .message-draft-meta {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: end;
+        padding: 0 10px 10px;
+      }
+
+      .message-draft-pill {
+        display: inline-grid;
+        place-items: center;
+        height: 26px;
+        padding: 0 9px;
+        border-radius: 5px;
+        background: var(--active-soft);
+        color: #005A50;
+        font-size: 11px;
+        line-height: 1;
+        font-weight: 800;
+      }
+
+      .action-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        min-height: 42px;
+        border: 0;
+        border-radius: 8px;
+        padding: 0 14px;
+        background: rgba(0, 43, 108, 0.11);
+        color: var(--ink);
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .action-button.primary {
+        background: var(--main);
+        color: #FFFFFF;
+      }
+
+      .action-button:disabled {
+        opacity: 0.52;
+      }
+
+      .button-icon,
+      .button-icon svg {
+        width: 18px;
+        height: 18px;
+      }
+
+      .button-icon svg {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .message-draft-overlay {
+        position: fixed;
+        inset: 10px;
+        z-index: 50;
+        display: grid;
+        place-items: stretch;
+        background: rgba(0, 13, 38, 0.18);
+        border-radius: 12px;
+        backdrop-filter: blur(16px) saturate(160%);
+        -webkit-backdrop-filter: blur(16px) saturate(160%);
+      }
+
+      .message-draft-canvas {
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        gap: 12px;
+        min-height: 0;
+        padding: 14px;
+        border: 0.5px solid rgba(196, 203, 206, 0.82);
+        border-radius: 12px;
+        background: #FFFFFF;
+        box-shadow: 0 18px 54px rgba(0, 13, 38, 0.22);
+      }
+
+      .message-draft-canvas-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: start;
+        padding-bottom: 12px;
+        border-bottom: 0.3px solid var(--line);
+      }
+
+      .message-draft-title-wrap {
+        min-width: 0;
+      }
+
+      .message-draft-title-wrap h2 {
+        margin: 0;
+        color: var(--ink);
+        font-size: 21px;
+        line-height: 1.15;
+        font-weight: 850;
+      }
+
+      .message-draft-title-wrap p {
+        margin: 6px 0 0;
+        color: #617285;
+        font-size: 13px;
+        line-height: 1.3;
+      }
+
+      .message-draft-canvas-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .message-draft-context {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .message-draft-context span {
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .message-template-select-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+        height: 30px;
+        padding: 0 8px;
+        border-radius: 6px;
+        background: #F1F5F9;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .message-template-select {
+        min-width: 86px;
+        border: 0;
+        background: transparent;
+        color: var(--ink);
+        font: inherit;
+        outline: none;
+      }
+
+      .message-draft-textarea {
+        width: 100%;
+        min-height: 0;
+        height: 100%;
+        resize: none;
+        border: 0.3px solid var(--line);
+        border-radius: 8px;
+        background: #F8FAFC;
+        color: #1F2937;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 15px;
+        line-height: 1.55;
+        padding: 16px;
+      }
+
+      .message-draft-textarea:focus {
+        outline: none;
+        border-color: rgba(0, 43, 108, 0.45);
+        box-shadow: 0 0 0 3px rgba(0, 43, 108, 0.1);
+      }
+
+      .message-draft-generating {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        min-height: 240px;
+        border: 0.3px solid var(--line);
+        border-radius: 8px;
+        background: #F8FAFC;
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .empty {
+        padding: 34px 18px;
+        text-align: center;
+        color: var(--muted);
+      }
+
+      .spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid rgba(0, 43, 108, 0.18);
+        border-top-color: var(--main);
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (min-width: 720px) {
+        .topbar {
+          padding-left: 24px;
+          padding-right: 24px;
+        }
+
+        .lead-list {
+          padding: 18px 24px;
+        }
+      }
+
+      @media (max-width: 719px) {
+        .messaging-list {
+          height: auto;
+          min-height: 0;
+        }
+
+        .message-draft-canvas-head {
+          grid-template-columns: 1fr;
+        }
+
+        .message-draft-canvas-actions {
+          justify-content: stretch;
+        }
+
+        .message-draft-canvas-actions .action-button {
+          flex: 1 1 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="top-grid">
+          <div class="module-select-wrap">
+            <select class="module-select" id="moduleSelect" aria-label="Workflow">
+              <option value="lead_review">Lead review</option>
+              <option value="lead_activity">Lead activity</option>
+              <option value="manual_requests">Manual requests</option>
+              <option value="outreach_log">Outreach log</option>
+              <option value="pipeline">Pipeline</option>
+              <option value="messaging">Messaging</option>
+              <option value="metrics">Metrics</option>
+              <option value="sanitize_log">Sanitize log</option>
+            </select>
+            <div class="subtitle" id="subtitle">Pre-final → Final</div>
+          </div>
+          <button class="top-action" id="sanitizeButton" type="button">Sanitize</button>
+          <button class="top-action primary is-hidden" id="saveReviewButton" type="button">Save</button>
+          <button class="top-action is-hidden" id="sanitizeLogRefreshButton" type="button">Refresh</button>
+          <select class="top-action filter-select is-hidden" id="manualRequestsFilter" aria-label="Outreach status filter">
+            <option value="all">All</option>
+            <option value="new">New</option>
+            <option value="connection_sent">Connection sent</option>
+            <option value="connected">Connected</option>
+          </select>
+          <button class="top-action primary is-hidden" id="manualRequestsSaveButton" type="button">Save</button>
+          <select class="top-action filter-select is-hidden" id="outreachLogFilter" aria-label="Outreach log filter">
+            <option value="active">Active</option>
+            <option value="overdue">Overdue</option>
+            <option value="conn_request">Conn request</option>
+            <option value="first_message">First message</option>
+            <option value="follow_up">Follow up</option>
+            <option value="connected">Connected</option>
+            <option value="all">All</option>
+          </select>
+          <button class="top-action primary is-hidden" id="outreachLogSaveButton" type="button">Save</button>
+          <select class="metrics-date-select is-hidden" id="metricsDateSelect" aria-label="Metrics date"></select>
+          <select class="metrics-period-select is-hidden" id="metricsPeriodSelect" aria-label="Metrics period">
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+          <button class="top-action is-hidden" id="metricsRefreshButton" type="button">Refresh</button>
+          <button class="top-action primary is-hidden" id="metricsSaveButton" type="button">Save</button>
+          <select class="top-action filter-select is-hidden" id="pipelineFilter" aria-label="Pipeline filter">
+            <option value="active">Active</option>
+            <option value="overdue">Overdue</option>
+            <option value="due_today">Due today</option>
+            <option value="done">Done</option>
+            <option value="all">All</option>
+          </select>
+          <button class="top-action is-hidden" id="pipelineSyncMessagingButton" type="button">Push to Messaging</button>
+          <button class="top-action primary is-hidden" id="pipelineSaveButton" type="button">Save</button>
+          <button class="top-action primary is-hidden" id="messagingRegenerateButton" type="button">Regenerate Queue</button>
+          <div class="bridge-wrap" id="bridgeWrap">
+            <button class="top-action primary" id="bridgeButton" type="button" aria-haspopup="true" aria-expanded="false">Bridge</button>
+            <div class="bridge-menu" id="bridgeMenu">
+              <button class="bridge-option" id="bridgeFinalOption" type="button">Bridge to final</button>
+              <button class="bridge-option" id="bridgeProspectsOption" type="button">Bridge to prospects</button>
+            </div>
+          </div>
+        </div>
+        <div class="stats-strip activity-stats" id="activityStats" aria-label="Final category summary">
+          <div class="stat">
+            <div class="stat-label">Available</div>
+            <div class="stat-value" id="totalCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Hyper</div>
+            <div class="stat-value" id="hyperCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">High</div>
+            <div class="stat-value" id="highCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Medium</div>
+            <div class="stat-value" id="mediumCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Low</div>
+            <div class="stat-value" id="lowCount">0</div>
+          </div>
+        </div>
+        <div class="stats-strip review-stats is-hidden" id="reviewStats" aria-label="Lead review summary">
+          <div class="stat">
+            <div class="stat-label">Available</div>
+            <div class="stat-value" id="reviewAvailableCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Approved</div>
+            <div class="stat-value" id="reviewApprovedCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Group</div>
+            <div class="stat-value" id="reviewGroupValue">-</div>
+          </div>
+        </div>
+        <div class="stats-strip sanitize-log-stats is-hidden" id="sanitizeLogStats" aria-label="Sanitize log summary">
+          <div class="stat">
+            <div class="stat-label">Shown</div>
+            <div class="stat-value" id="sanitizeLogShownCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Swapped</div>
+            <div class="stat-value" id="sanitizeLogSwappedCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Moved</div>
+            <div class="stat-value" id="sanitizeLogMovedCount">0</div>
+          </div>
+        </div>
+        <div class="stats-strip manual-requests-stats is-hidden" id="manualRequestsStats" aria-label="Manual requests summary">
+          <div class="stat">
+            <div class="stat-label">Total</div>
+            <div class="stat-value" id="manualRequestsTotalCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">New</div>
+            <div class="stat-value" id="manualRequestsNewCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Sent</div>
+            <div class="stat-value" id="manualRequestsSentCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Connected</div>
+            <div class="stat-value" id="manualRequestsConnectedCount">0</div>
+          </div>
+        </div>
+        <div class="stats-strip manual-requests-stats is-hidden" id="outreachLogStats" aria-label="Outreach log summary">
+          <div class="stat">
+            <div class="stat-label">Total</div>
+            <div class="stat-value" id="outreachLogTotalCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Conn</div>
+            <div class="stat-value" id="outreachLogConnCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Overdue</div>
+            <div class="stat-value" id="outreachLogOverdueCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Connected</div>
+            <div class="stat-value" id="outreachLogConnectedCount">0</div>
+          </div>
+        </div>
+        <div class="stats-strip pipeline-stats is-hidden" id="pipelineStats" aria-label="Pipeline summary">
+          <div class="stat">
+            <div class="stat-label">Total</div>
+            <div class="stat-value" id="pipelineTotalCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Overdue</div>
+            <div class="stat-value" id="pipelineOverdueCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Today</div>
+            <div class="stat-value" id="pipelineTodayCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Upcoming</div>
+            <div class="stat-value" id="pipelineUpcomingCount">0</div>
+          </div>
+        </div>
+        <div class="stats-strip messaging-stats is-hidden" id="messagingStats" aria-label="Messaging summary">
+          <div class="stat">
+            <div class="stat-label">Leads</div>
+            <div class="stat-value" id="messagingTotalCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Drafted</div>
+            <div class="stat-value" id="messagingResearchedCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Pending</div>
+            <div class="stat-value" id="messagingPendingCount">0</div>
+          </div>
+        </div>
+        <div class="stats-strip metrics-stats is-hidden" id="metricsStats" aria-label="Metrics summary">
+          <div class="stat">
+            <div class="stat-label">Accept Rate</div>
+            <div class="stat-value" id="metricsAcceptanceRateValue">0.0%</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Total Conn</div>
+            <div class="stat-value" id="metricsTotalConnSentValue">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Reply Rate</div>
+            <div class="stat-value" id="metricsReplyRateValue">0.0%</div>
+          </div>
+        </div>
+        <div class="meta-row">
+          <div id="countMeta"></div>
+          <div class="status" id="statusText"></div>
+        </div>
+      </header>
+      <section class="lead-list" id="leadList">
+        <div class="empty">Loading leads...</div>
+      </section>
+      <section class="lead-list is-hidden" id="reviewList">
+        <div class="empty">Loading review queue...</div>
+      </section>
+      <section class="lead-list is-hidden" id="sanitizeLogList">
+        <div class="empty">Loading Sanitize log...</div>
+      </section>
+      <section class="lead-list is-hidden" id="manualRequestsList">
+        <div class="empty">Loading prospects...</div>
+      </section>
+      <section class="lead-list is-hidden" id="outreachLogList">
+        <div class="empty">Loading Outreach Log...</div>
+      </section>
+      <section class="lead-list is-hidden" id="pipelineList">
+        <div class="empty">Loading Pipeline...</div>
+      </section>
+      <section class="lead-list messaging-list is-hidden" id="messagingList">
+        <div class="empty">Loading Messaging...</div>
+      </section>
+      <section class="lead-list is-hidden" id="metricsList">
+        <div class="empty">Loading Metrics...</div>
+      </section>
+      <div class="outreach-search-dock is-hidden" id="outreachLogSearchDock">
+        <input class="outreach-search-input" id="outreachLogSearchInput" type="search" placeholder="Search outreach log" autocomplete="off">
+        <button class="outreach-search-clear" id="outreachLogSearchClear" type="button" aria-label="Clear outreach log search">x</button>
+        <button class="outreach-search-button" id="outreachLogSearchButton" type="button" aria-label="Search outreach log">
+          <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M10.8 18.1a7.3 7.3 0 1 1 0-14.6 7.3 7.3 0 0 1 0 14.6Zm5.2-2.1 4.2 4.2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+    </main>
+
+    <script>
+      const INITIAL_VIEW = '<?= initialView ?>';
+      const WEB_APP_URL = '<?= webAppUrl ?>';
+
+      const Shell = (() => {
+        const state = {
+          view: 'lead_review',
+          loading: false,
+          busy: false,
+          workflowState: {
+            sanitizeDone: false,
+            bridgeFinalDone: false,
+            bridgeProspectsDone: false,
+          },
+        };
+        const els = {
+          moduleSelect: document.getElementById('moduleSelect'),
+          subtitle: document.getElementById('subtitle'),
+          statusText: document.getElementById('statusText'),
+          activityStats: document.getElementById('activityStats'),
+          reviewStats: document.getElementById('reviewStats'),
+          sanitizeLogStats: document.getElementById('sanitizeLogStats'),
+          manualRequestsStats: document.getElementById('manualRequestsStats'),
+          outreachLogStats: document.getElementById('outreachLogStats'),
+          pipelineStats: document.getElementById('pipelineStats'),
+          messagingStats: document.getElementById('messagingStats'),
+          metricsStats: document.getElementById('metricsStats'),
+          sanitizeButton: document.getElementById('sanitizeButton'),
+          saveReviewButton: document.getElementById('saveReviewButton'),
+          sanitizeLogRefreshButton: document.getElementById('sanitizeLogRefreshButton'),
+          manualRequestsFilter: document.getElementById('manualRequestsFilter'),
+          manualRequestsSaveButton: document.getElementById('manualRequestsSaveButton'),
+          outreachLogFilter: document.getElementById('outreachLogFilter'),
+          outreachLogSaveButton: document.getElementById('outreachLogSaveButton'),
+          outreachLogSearchDock: document.getElementById('outreachLogSearchDock'),
+          metricsRefreshButton: document.getElementById('metricsRefreshButton'),
+          metricsSaveButton: document.getElementById('metricsSaveButton'),
+          metricsDateSelect: document.getElementById('metricsDateSelect'),
+          metricsPeriodSelect: document.getElementById('metricsPeriodSelect'),
+          pipelineFilter: document.getElementById('pipelineFilter'),
+          pipelineSyncMessagingButton: document.getElementById('pipelineSyncMessagingButton'),
+          pipelineSaveButton: document.getElementById('pipelineSaveButton'),
+          messagingRegenerateButton: document.getElementById('messagingRegenerateButton'),
+          messagingTotalCount: document.getElementById('messagingTotalCount'),
+          messagingResearchedCount: document.getElementById('messagingResearchedCount'),
+          messagingPendingCount: document.getElementById('messagingPendingCount'),
+          bridgeWrap: document.getElementById('bridgeWrap'),
+          leadList: document.getElementById('leadList'),
+          reviewList: document.getElementById('reviewList'),
+          sanitizeLogList: document.getElementById('sanitizeLogList'),
+          manualRequestsList: document.getElementById('manualRequestsList'),
+          outreachLogList: document.getElementById('outreachLogList'),
+          pipelineList: document.getElementById('pipelineList'),
+          messagingList: document.getElementById('messagingList'),
+          metricsList: document.getElementById('metricsList'),
+        };
+
+        function setStatus(text, isError) {
+          els.statusText.textContent = text || '';
+          els.statusText.classList.toggle('error', Boolean(isError));
+        }
+
+        function setLoading(loading) {
+          state.loading = Boolean(loading);
+          updateGateControls();
+        }
+
+        function setBusy(busy) {
+          state.busy = Boolean(busy);
+          els.moduleSelect.disabled = state.busy || state.loading;
+          updateGateControls();
+        }
+
+        function setSubtitle(text) {
+          els.subtitle.textContent = text || '';
+        }
+
+        function isBusy() {
+          return state.loading || state.busy;
+        }
+
+        function getWorkflowState() {
+          return state.workflowState;
+        }
+
+        function updateWorkflowState(patch) {
+          state.workflowState = Object.assign({}, state.workflowState, patch || {});
+          updateGateControls();
+        }
+
+        function updateGateControls() {
+          if (typeof LeadActivity !== 'undefined') LeadActivity.updateControls();
+          if (typeof LeadReview !== 'undefined') LeadReview.updateControls();
+          if (typeof SanitizeLog !== 'undefined') SanitizeLog.updateControls();
+          if (typeof ManualRequests !== 'undefined') ManualRequests.updateControls();
+          if (typeof OutreachLog !== 'undefined') OutreachLog.updateControls();
+          if (typeof Pipeline !== 'undefined') Pipeline.updateControls();
+          if (typeof Messaging !== 'undefined') Messaging.updateControls();
+          if (typeof Metrics !== 'undefined') Metrics.updateControls();
+        }
+
+        function canUseAppsScript() {
+          return Boolean(window.google && google.script && google.script.run);
+        }
+
+        function escapeHtml(value) {
+          return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+        }
+
+        function escapeAttr(value) {
+          return escapeHtml(value);
+        }
+
+        function shortLeadId(id) {
+          const value = String(id || '').trim();
+          if (value.length <= 12) return value;
+          return `${value.slice(0, 12)}....`;
+        }
+
+        function shortGroup(value) {
+          const text = String(value || '').trim();
+          return text ? text.replace(/\d{4}$/, (year) => year.slice(2)) : '-';
+        }
+
+        const WIRED_VIEWS = ['lead_review', 'lead_activity', 'manual_requests', 'outreach_log', 'pipeline', 'messaging', 'metrics', 'sanitize_log'];
+
+        function switchView(view) {
+          const nextView = WIRED_VIEWS.indexOf(view) !== -1 ? view : 'lead_review';
+          state.view = nextView;
+          els.moduleSelect.value = nextView;
+
+          const isActivity = nextView === 'lead_activity';
+          const isReview = nextView === 'lead_review';
+          const isLog = nextView === 'sanitize_log';
+          const isManual = nextView === 'manual_requests';
+          const isOutreach = nextView === 'outreach_log';
+          const isPipeline = nextView === 'pipeline';
+          const isMessaging = nextView === 'messaging';
+          const isMetrics = nextView === 'metrics';
+
+          els.sanitizeButton.classList.toggle('is-hidden', !isActivity);
+          els.bridgeWrap.classList.toggle('is-hidden', !isActivity);
+          els.saveReviewButton.classList.toggle('is-hidden', !isReview);
+          els.sanitizeLogRefreshButton.classList.toggle('is-hidden', !isLog);
+          els.manualRequestsFilter.classList.toggle('is-hidden', !isManual);
+          els.manualRequestsSaveButton.classList.toggle('is-hidden', !isManual);
+          els.outreachLogFilter.classList.toggle('is-hidden', !isOutreach);
+          els.outreachLogSaveButton.classList.toggle('is-hidden', !isOutreach);
+          els.outreachLogSearchDock.classList.toggle('is-hidden', !isOutreach);
+          els.metricsRefreshButton.classList.toggle('is-hidden', !isMetrics);
+          els.metricsSaveButton.classList.toggle('is-hidden', !isMetrics);
+          els.metricsDateSelect.classList.toggle('is-hidden', !isMetrics);
+          els.metricsPeriodSelect.classList.toggle('is-hidden', !isMetrics);
+          els.pipelineFilter.classList.toggle('is-hidden', !isPipeline);
+          els.pipelineSyncMessagingButton.classList.toggle('is-hidden', !isPipeline);
+          els.pipelineSaveButton.classList.toggle('is-hidden', !isPipeline);
+          els.messagingRegenerateButton.classList.toggle('is-hidden', !isMessaging);
+          els.activityStats.classList.toggle('is-hidden', !isActivity);
+          els.reviewStats.classList.toggle('is-hidden', !isReview);
+          els.sanitizeLogStats.classList.toggle('is-hidden', !isLog);
+          els.manualRequestsStats.classList.toggle('is-hidden', !isManual);
+          els.outreachLogStats.classList.toggle('is-hidden', !isOutreach);
+          els.pipelineStats.classList.toggle('is-hidden', !isPipeline);
+          els.messagingStats.classList.toggle('is-hidden', !isMessaging);
+          els.metricsStats.classList.toggle('is-hidden', !isMetrics);
+          els.leadList.classList.toggle('is-hidden', !isActivity);
+          els.reviewList.classList.toggle('is-hidden', !isReview);
+          els.sanitizeLogList.classList.toggle('is-hidden', !isLog);
+          els.manualRequestsList.classList.toggle('is-hidden', !isManual);
+          els.outreachLogList.classList.toggle('is-hidden', !isOutreach);
+          els.pipelineList.classList.toggle('is-hidden', !isPipeline);
+          els.messagingList.classList.toggle('is-hidden', !isMessaging);
+          els.metricsList.classList.toggle('is-hidden', !isMetrics);
+
+          setStatus('', false);
+
+          if (isReview) {
+            setSubtitle('Lead Review');
+            LeadReview.load();
+          } else if (isLog) {
+            setSubtitle('Sanitize Log');
+            SanitizeLog.load();
+          } else if (isManual) {
+            setSubtitle('Prospects');
+            ManualRequests.load();
+          } else if (isOutreach) {
+            setSubtitle('Outreach Log');
+            OutreachLog.load();
+          } else if (isPipeline) {
+            setSubtitle('Pipeline');
+            Pipeline.load();
+          } else if (isMessaging) {
+            setSubtitle('Messaging');
+            Messaging.load();
+          } else if (isMetrics) {
+            setSubtitle('Metrics');
+            Metrics.load();
+          } else {
+            setSubtitle('Pre-final → Final');
+            LeadActivity.load();
+          }
+        }
+
+        function isWiredView(view) {
+          return WIRED_VIEWS.indexOf(view) !== -1;
+        }
+
+        function getView() {
+          return state.view;
+        }
+
+        return {
+          setStatus, setLoading, setBusy, setSubtitle,
+          isBusy, getView,
+          getWorkflowState, updateWorkflowState, updateGateControls,
+          canUseAppsScript,
+          escapeHtml, escapeAttr,
+          shortLeadId, shortGroup,
+          switchView, isWiredView,
+        };
+      })();
+    </script>
+
+    <?!= include('LeadActivityView') ?>
+    <?!= include('LeadReviewView') ?>
+    <?!= include('SanitizeLogView') ?>
+    <?!= include('ManualRequestsView') ?>
+    <?!= include('OutreachLogView') ?>
+    <?!= include('PipelineView') ?>
+    <?!= include('MessageDraftView') ?>
+    <?!= include('MetricsView') ?>
+
+    <script>
+      (function bootstrap() {
+        LeadActivity.init();
+        LeadReview.init();
+        SanitizeLog.init();
+        ManualRequests.init();
+        OutreachLog.init();
+        Pipeline.init();
+        Messaging.init();
+        Metrics.init();
+
+        const moduleSelect = document.getElementById('moduleSelect');
+        moduleSelect.addEventListener('change', () => {
+          const value = moduleSelect.value;
+          if (Shell.isWiredView(value)) {
+            Shell.switchView(value);
+            return;
+          }
+          Shell.setStatus('This workflow is not wired yet', false);
+          moduleSelect.value = Shell.getView();
+        });
+
+        Shell.updateGateControls();
+        Shell.switchView(INITIAL_VIEW);
+      })();
+    </script>
+  </body>
+</html>

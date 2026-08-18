@@ -1,0 +1,624 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Lead Review">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#002B6C">
+    <style>
+      :root {
+        --bg: #F6FBFD;
+        --panel: #FFFFFF;
+        --ink: #000D26;
+        --muted: #88979D;
+        --line: #C4CBCE;
+        --stroke: rgba(136, 151, 157, 0.5);
+        --main: #002B6C;
+        --main-soft: rgba(142, 216, 250, 0.15);
+        --top: rgba(0, 87, 255, 0.05);
+        --danger: #B42318;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: 0;
+      }
+
+      button,
+      select,
+      input {
+        font: inherit;
+      }
+
+      button,
+      select,
+      input {
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      button:focus,
+      select:focus,
+      input:focus {
+        outline: none;
+        box-shadow: none;
+      }
+
+      .app {
+        min-height: 100vh;
+        padding-bottom: calc(28px + env(safe-area-inset-bottom));
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        padding: calc(12px + env(safe-area-inset-top)) 12px 8px;
+        background: var(--top);
+        border-bottom: 0.3px solid rgba(196, 203, 206, 0.7);
+        backdrop-filter: blur(18px) saturate(180%);
+        -webkit-backdrop-filter: blur(18px) saturate(180%);
+      }
+
+      .top-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: start;
+      }
+
+      .module-select {
+        max-width: 100%;
+        border: 0;
+        background: transparent;
+        color: var(--ink);
+        font-size: 19px;
+        line-height: 1.1;
+        font-weight: 800;
+        padding: 0 22px 0 0;
+      }
+
+      .subtitle {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .top-action {
+        height: 38px;
+        border: 0;
+        border-radius: 6px;
+        padding: 0 13px;
+        color: #FFFFFF;
+        background: var(--main);
+        font-size: 15px;
+        font-weight: 600;
+      }
+
+      .top-action.progressing {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .stats-strip {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        justify-content: space-between;
+        margin-top: 9px;
+        padding: 9px 10px;
+        border-radius: 5px;
+        background: var(--main-soft);
+      }
+
+      .stat {
+        min-width: 0;
+        text-align: center;
+      }
+
+      .stat-label {
+        color: #52646D;
+        font-size: 12px;
+        line-height: 1.1;
+      }
+
+      .stat-value {
+        margin-top: 5px;
+        color: var(--ink);
+        font-size: 17px;
+        line-height: 1;
+        font-weight: 800;
+      }
+
+      .status {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.2;
+      }
+
+      .status:empty {
+        display: none;
+      }
+
+      .status.error {
+        color: var(--danger);
+      }
+
+      .lead-list {
+        display: grid;
+        gap: 6px;
+        padding: 12px;
+        max-width: 860px;
+        margin: 0 auto;
+      }
+
+      .lead-card {
+        background: var(--panel);
+        border: 0.3px solid var(--stroke);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      .firm-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 10px 8px;
+        border-bottom: 0.3px solid var(--line);
+      }
+
+      .firm-link {
+        min-width: 0;
+        color: var(--ink);
+        font-size: 16px;
+        line-height: 1.2;
+        font-weight: 500;
+        text-decoration: none;
+      }
+
+      .firm-link span {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .run-id {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.1;
+        max-width: 112px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .review-body {
+        padding: 10px;
+      }
+
+      .field-grid {
+        display: grid;
+        grid-template-columns: 35fr 65fr;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .field-label {
+        margin: 0 0 3px;
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.1;
+      }
+
+      .readonly-field,
+      .use-field {
+        width: 100%;
+        height: 26px;
+        min-width: 0;
+        border: 0.3px solid var(--line);
+        border-radius: 2px;
+        background: #FFFFFF;
+        color: #536173;
+        font-size: 12px;
+        line-height: 25px;
+        padding: 0 7px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .approval-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 0.3px solid rgba(196, 203, 206, 0.55);
+      }
+
+      .approve-label {
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .approve-toggle {
+        appearance: none;
+        width: 46px;
+        height: 26px;
+        border: 0;
+        border-radius: 999px;
+        background: rgba(136, 151, 157, 0.28);
+        position: relative;
+      }
+
+      .approve-toggle::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #FFFFFF;
+        box-shadow: 0 1px 3px rgba(0, 13, 38, 0.22);
+        transition: transform 0.16s ease;
+      }
+
+      .approve-toggle:checked {
+        background: var(--main);
+      }
+
+      .approve-toggle:checked::after {
+        transform: translateX(20px);
+      }
+
+      .lead-card.is-approved .review-body {
+        background: var(--main-soft);
+      }
+
+      .empty {
+        padding: 34px 18px;
+        text-align: center;
+        color: var(--muted);
+      }
+
+      .spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid rgba(255, 255, 255, 0.32);
+        border-top-color: #FFFFFF;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (min-width: 720px) {
+        .topbar {
+          padding-left: 24px;
+          padding-right: 24px;
+        }
+
+        .lead-list {
+          padding: 18px 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="top-grid">
+          <div>
+            <select class="module-select" id="moduleSelect" aria-label="Workflow">
+              <option value="lead_activity">Lead activity</option>
+              <option value="lead_review" selected>Lead review</option>
+              <option value="manual_requests">Manual requests</option>
+              <option value="outreach_log">Outreach log</option>
+            </select>
+            <div class="subtitle" id="subtitle">Lead Review</div>
+          </div>
+          <button class="top-action" id="saveButton" type="button">Save</button>
+        </div>
+        <div class="stats-strip" aria-label="Lead review summary">
+          <div class="stat">
+            <div class="stat-label">Available</div>
+            <div class="stat-value" id="availableCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Approved</div>
+            <div class="stat-value" id="approvedCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Group</div>
+            <div class="stat-value" id="groupValue">-</div>
+          </div>
+        </div>
+        <div class="status" id="statusText">Loading</div>
+      </header>
+      <section class="lead-list" id="leadList">
+        <div class="empty">Loading review queue...</div>
+      </section>
+    </main>
+
+    <script>
+      const WEB_APP_URL = '<?= webAppUrl ?>';
+      const state = {
+        leads: [],
+        useValues: ['', 'Potential leads', 'Case study worthy', 'Not bad, Not good', 'Not a lead', 'Exclude'],
+        loading: false,
+      };
+
+      const els = {
+        moduleSelect: document.getElementById('moduleSelect'),
+        saveButton: document.getElementById('saveButton'),
+        leadList: document.getElementById('leadList'),
+        subtitle: document.getElementById('subtitle'),
+        statusText: document.getElementById('statusText'),
+        availableCount: document.getElementById('availableCount'),
+        approvedCount: document.getElementById('approvedCount'),
+        groupValue: document.getElementById('groupValue'),
+      };
+
+      function setStatus(text, isError) {
+        els.statusText.textContent = text || '';
+        els.statusText.classList.toggle('error', Boolean(isError));
+      }
+
+      function setLoading(loading) {
+        state.loading = loading;
+        els.saveButton.disabled = loading;
+        els.moduleSelect.disabled = loading;
+      }
+
+      function loadReview() {
+        if (!canUseAppsScript()) {
+          setLoading(false);
+          setStatus('Local preview only. Use the deployed web app to load review data.', false);
+          els.leadList.innerHTML = '<div class="empty">Open the deployed Apps Script web app to load the review queue.</div>';
+          return;
+        }
+        setLoading(true);
+        setStatus('Loading', false);
+        google.script.run
+          .withSuccessHandler((payload) => {
+            state.leads = payload.leads || [];
+            state.useValues = payload.useValues || state.useValues;
+            els.subtitle.textContent = payload.reviewTabName || 'Lead Review';
+            els.groupValue.textContent = shortGroup(payload.groupDate);
+            updateStats();
+            setLoading(false);
+            setStatus('', false);
+            render();
+          })
+          .withFailureHandler((error) => {
+            setLoading(false);
+            setStatus(error.message || String(error), true);
+            els.leadList.innerHTML = '<div class="empty">Could not load review queue.</div>';
+          })
+          .getReviewPayload({ limit: 100 });
+      }
+
+      function updateStats() {
+        const approved = state.leads.filter((lead) => lead.approved).length;
+        els.availableCount.textContent = state.leads.length || 0;
+        els.approvedCount.textContent = approved;
+      }
+
+      function render() {
+        if (!state.leads.length) {
+          els.leadList.innerHTML = '<div class="empty">No review leads found.</div>';
+          return;
+        }
+        els.leadList.innerHTML = state.leads.map(renderLead).join('');
+        bindControls();
+      }
+
+      function renderLead(lead) {
+        return `
+          <article class="lead-card ${lead.approved ? 'is-approved' : ''}" data-row="${escapeAttr(lead.rowNumber)}">
+            <div class="firm-row">
+              ${renderFirm(lead)}
+              <div class="run-id">ID:${escapeHtml(shortRunId(lead.runId))}</div>
+            </div>
+            <div class="review-body">
+              <div class="field-grid">
+                <div>
+                  <div class="field-label">Emp count:</div>
+                  <div class="readonly-field">${escapeHtml(lead.empCount || '')}</div>
+                </div>
+                <div>
+                  <div class="field-label">Use:</div>
+                  ${renderUseSelect(lead)}
+                </div>
+              </div>
+              <div class="approval-row">
+                <div class="approve-label">Approved</div>
+                <input class="approve-toggle" type="checkbox" data-row="${escapeAttr(lead.rowNumber)}" ${lead.approved ? 'checked' : ''}>
+              </div>
+            </div>
+          </article>
+        `;
+      }
+
+      function renderFirm(lead) {
+        const label = escapeHtml(lead.company || lead.runId || 'Unnamed lead');
+        if (!lead.website) {
+          return `<div class="firm-link"><span>${label}</span></div>`;
+        }
+        return `<a class="firm-link" href="${escapeAttr(lead.website)}" target="_blank" rel="noopener"><span>${label}</span></a>`;
+      }
+
+      function renderUseSelect(lead) {
+        const value = lead.use || '';
+        const values = state.useValues.indexOf(value) === -1
+          ? state.useValues.concat(value)
+          : state.useValues;
+        const options = values.map((item) => {
+          const label = item || 'Blank';
+          const selected = item === value ? 'selected' : '';
+          return `<option value="${escapeAttr(item)}" ${selected}>${escapeHtml(label)}</option>`;
+        }).join('');
+        return `<select class="use-field" data-row="${escapeAttr(lead.rowNumber)}">${options}</select>`;
+      }
+
+      function bindControls() {
+        document.querySelectorAll('.approve-toggle').forEach((checkbox) => {
+          checkbox.addEventListener('change', () => {
+            const card = checkbox.closest('.lead-card');
+            card.classList.toggle('is-approved', checkbox.checked);
+            const lead = state.leads.find((item) => Number(item.rowNumber) === Number(checkbox.dataset.row));
+            if (lead) {
+              lead.approved = checkbox.checked;
+            }
+            updateStats();
+          });
+        });
+        document.querySelectorAll('.use-field').forEach((select) => {
+          select.addEventListener('change', () => {
+            const lead = state.leads.find((item) => Number(item.rowNumber) === Number(select.dataset.row));
+            if (lead) {
+              lead.use = select.value;
+            }
+          });
+        });
+      }
+
+      function collectReviewItems() {
+        return state.leads.map((lead) => {
+          const rowNumber = Number(lead.rowNumber);
+          const approved = Boolean(lead.approved);
+          const select = document.querySelector(`.use-field[data-row="${rowNumber}"]`);
+          return {
+            rowNumber,
+            approved,
+            use: select ? select.value : lead.use || '',
+          };
+        }).filter((item) => Number.isInteger(item.rowNumber) && item.rowNumber > 1);
+      }
+
+      function saveReview() {
+        if (!canUseAppsScript()) {
+          setStatus('Use the deployed web app to save approvals.', true);
+          return;
+        }
+        const items = collectReviewItems();
+        if (!items.length) {
+          setStatus('No review rows to save', false);
+          return;
+        }
+        setLoading(true);
+        els.saveButton.classList.add('progressing');
+        els.saveButton.innerHTML = '<span class="spinner"></span><span>Save</span>';
+        setStatus('Saving approvals', false);
+        google.script.run
+          .withSuccessHandler((result) => {
+            els.saveButton.classList.remove('progressing');
+            els.saveButton.textContent = 'Save';
+            setLoading(false);
+            setStatus(`Saved ${result.processed || 0} rows, ${result.approvedCount || 0} approved`, false);
+          })
+          .withFailureHandler((error) => {
+            els.saveButton.classList.remove('progressing');
+            els.saveButton.textContent = 'Save';
+            setLoading(false);
+            setStatus(error.message || String(error), true);
+          })
+          .updateReviewApprovals(items);
+      }
+
+      function navigateToActivity() {
+        if (window.location.protocol === 'file:') {
+          window.location.href = 'Index.html';
+          return;
+        }
+        navigateWithinApp(getWebAppBaseUrl());
+      }
+
+      function getWebAppBaseUrl() {
+        if (/^https?:\/\//.test(WEB_APP_URL)) {
+          return WEB_APP_URL;
+        }
+        return window.location.href.split('?')[0];
+      }
+
+      function navigateWithinApp(url) {
+        try {
+          if (window.top && window.top !== window) {
+            window.top.location.assign(url);
+            return;
+          }
+        } catch (error) {
+          // Fall back to the current frame when Apps Script blocks top navigation.
+        }
+        window.location.assign(url);
+      }
+
+      function canUseAppsScript() {
+        return Boolean(window.google && google.script && google.script.run);
+      }
+
+      function shortRunId(id) {
+        const value = String(id || '').trim();
+        if (value.length <= 12) {
+          return value;
+        }
+        return `${value.slice(0, 12)}....`;
+      }
+
+      function shortGroup(value) {
+        const text = String(value || '').trim();
+        return text ? text.replace(/\d{4}$/, (year) => year.slice(2)) : '-';
+      }
+
+      function escapeHtml(value) {
+        return String(value || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      function escapeAttr(value) {
+        return escapeHtml(value);
+      }
+
+      els.moduleSelect.addEventListener('change', () => {
+        if (els.moduleSelect.value === 'lead_activity') {
+          navigateToActivity();
+          return;
+        }
+        if (els.moduleSelect.value !== 'lead_review') {
+          setStatus('This workflow is not wired yet', false);
+          els.moduleSelect.value = 'lead_review';
+        }
+      });
+      els.saveButton.addEventListener('click', saveReview);
+      loadReview();
+    </script>
+  </body>
+</html>

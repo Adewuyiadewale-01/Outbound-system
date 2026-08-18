@@ -1,0 +1,146 @@
+<script>
+  const Messaging = (() => {
+    const state = {
+      loaded: false,
+      loading: false,
+      entries: [],
+      activeIndex: 0,
+    };
+    const els = {
+      list: document.getElementById('messagingList'),
+      totalCount: document.getElementById('messagingTotalCount'),
+      researchedCount: document.getElementById('messagingResearchedCount'),
+      pendingCount: document.getElementById('messagingPendingCount'),
+    };
+
+    function init() {}
+
+    function load(force) {
+      if (state.loading) return;
+      if (state.loaded && !force) {
+        render();
+        return;
+      }
+      if (!Shell.canUseAppsScript()) {
+        els.list.innerHTML = '<div class="empty">Open the deployed web app to load Messaging.</div>';
+        updateStats({ total: 0, researched: 0, pending: 0 });
+        return;
+      }
+
+      state.loading = true;
+      Shell.setLoading(true);
+      els.list.innerHTML = '<div class="empty">Loading Messaging...</div>';
+      google.script.run
+        .withSuccessHandler((payload) => {
+          state.loading = false;
+          state.loaded = true;
+          Shell.setLoading(false);
+          state.entries = payload.entries || [];
+          state.activeIndex = Math.min(state.activeIndex, Math.max(0, state.entries.length - 1));
+          updateStats(payload.counts || {});
+          Shell.setSubtitle(payload.messagingTabName || 'Messaging');
+          render();
+        })
+        .withFailureHandler((error) => {
+          state.loading = false;
+          Shell.setLoading(false);
+          els.list.innerHTML = '<div class="empty">Could not load Messaging.</div>';
+          Shell.setStatus(error && error.message ? error.message : 'Could not load Messaging', true);
+        })
+        .getMessagingPayload({});
+    }
+
+    function updateStats(counts) {
+      els.totalCount.textContent = counts.total || 0;
+      els.researchedCount.textContent = counts.researched || 0;
+      els.pendingCount.textContent = counts.pending || 0;
+    }
+
+    function render() {
+      if (!state.entries.length) {
+        els.list.innerHTML = '<div class="empty">No Messaging leads found.</div>';
+        return;
+      }
+
+      const active = state.entries[state.activeIndex] || state.entries[0];
+      els.list.innerHTML = `
+        <div class="messaging-tabs" role="tablist" aria-label="Messaging leads">
+          ${state.entries.map(renderTab).join('')}
+        </div>
+        <article class="messaging-panel">
+          <div class="messaging-grid">
+            ${renderField('Company', renderCompany(active))}
+            ${renderField('Contact', Shell.escapeHtml(active.contactName || '-'))}
+            ${renderField('Contact LinkedIn', renderLink(active.contactLinkedin, active.contactLinkedin || '-'))}
+            ${renderField('ChatGPT', renderLink(active.chatgptUrl, active.chatgptUrl ? 'Open conversation' : '-'))}
+          </div>
+          ${renderSummaryMeta(active)}
+          ${renderSummary(active)}
+        </article>
+      `;
+    }
+
+    function renderTab(entry, index) {
+      const label = entry.company || entry.contactName || entry.prospectId || `Lead ${index + 1}`;
+      return `
+        <button class="messaging-tab ${index === state.activeIndex ? 'is-active' : ''}" type="button" role="tab" data-index="${index}" aria-selected="${index === state.activeIndex ? 'true' : 'false'}">
+          ${Shell.escapeHtml(label)}
+        </button>
+      `;
+    }
+
+    function renderField(label, valueHtml) {
+      return `
+        <div class="messaging-field">
+          <div class="messaging-label">${Shell.escapeHtml(label)}</div>
+          ${valueHtml}
+        </div>
+      `;
+    }
+
+    function renderCompany(entry) {
+      const label = entry.company || '-';
+      return renderLink(entry.companyWebsite, label);
+    }
+
+    function renderLink(url, label) {
+      if (!url) {
+        return `<span class="messaging-value">${Shell.escapeHtml(label || '-')}</span>`;
+      }
+      return `<a class="messaging-value is-link" href="${Shell.escapeAttr(url)}" target="_blank" rel="noopener">${Shell.escapeHtml(label || url)}</a>`;
+    }
+
+    function renderSummary(entry) {
+      if (entry.researchSummaryHtml) {
+        return `<div class="messaging-summary">${entry.researchSummaryHtml}</div>`;
+      }
+      return `<div class="messaging-summary is-plain">${Shell.escapeHtml(entry.researchSummary || 'No research doc tab captured yet.')}</div>`;
+    }
+
+    function renderSummaryMeta(entry) {
+      const source = entry.researchSummarySource || 'unknown';
+      const htmlLength = entry.researchSummaryHtmlLength || 0;
+      const textLength = entry.researchSummaryTextLength || 0;
+      const status = entry.researchSummaryFetchStatus ? ` · HTTP ${Shell.escapeHtml(entry.researchSummaryFetchStatus)}` : '';
+      const error = entry.researchSummaryFetchError ? ` · ${Shell.escapeHtml(entry.researchSummaryFetchError)}` : '';
+      return `
+        <div class="messaging-summary-meta">
+          ${Shell.escapeHtml(source)} · html ${Shell.escapeHtml(htmlLength)} · text ${Shell.escapeHtml(textLength)}${status}${error}
+        </div>
+      `;
+    }
+
+    document.addEventListener('click', (event) => {
+      const tab = event.target.closest('.messaging-tab');
+      if (!tab || !els.list.contains(tab)) return;
+      const index = Number(tab.dataset.index);
+      if (!Number.isInteger(index)) return;
+      state.activeIndex = index;
+      render();
+    });
+
+    function updateControls() {}
+
+    return { init, load, updateControls };
+  })();
+</script>

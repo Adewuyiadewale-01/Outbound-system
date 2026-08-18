@@ -1,0 +1,103 @@
+<script>
+  const SanitizeLog = (() => {
+    const state = {
+      entries: [],
+      totalRows: 0,
+    };
+    let els = null;
+
+    function init() {
+      els = {
+        list: document.getElementById('sanitizeLogList'),
+        shownCount: document.getElementById('sanitizeLogShownCount'),
+        swappedCount: document.getElementById('sanitizeLogSwappedCount'),
+        movedCount: document.getElementById('sanitizeLogMovedCount'),
+        refreshButton: document.getElementById('sanitizeLogRefreshButton'),
+      };
+      els.refreshButton.addEventListener('click', load);
+    }
+
+    function load() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setLoading(false);
+        Shell.setStatus('Local preview only. Use the deployed web app to load the Sanitize log.', false);
+        els.list.innerHTML = '<div class="empty">Open the deployed Apps Script web app to load the Sanitize log.</div>';
+        return;
+      }
+      Shell.setLoading(true);
+      Shell.setStatus('Loading', false);
+      els.list.innerHTML = '<div class="empty">Loading Sanitize log...</div>';
+      google.script.run
+        .withSuccessHandler((payload) => {
+          state.entries = payload.entries || [];
+          state.totalRows = payload.totalRows || 0;
+          Shell.setSubtitle(payload.sanitizeLogTabName || 'Sanitize Log');
+          updateStats(payload.counts || {});
+          Shell.setLoading(false);
+          Shell.setStatus('', false);
+          render();
+        })
+        .withFailureHandler((error) => {
+          Shell.setLoading(false);
+          Shell.setStatus(error.message || String(error), true);
+          els.list.innerHTML = '<div class="empty">Could not load Sanitize log.</div>';
+        })
+        .getSanitizeLogPayload({});
+    }
+
+    function updateStats(counts) {
+      els.shownCount.textContent = counts.shown || 0;
+      els.swappedCount.textContent = counts.swapped || 0;
+      els.movedCount.textContent = counts.moved || 0;
+    }
+
+    function render() {
+      if (!state.entries.length) {
+        els.list.innerHTML = '<div class="empty">No Sanitize runs recorded yet.</div>';
+        return;
+      }
+      els.list.innerHTML = state.entries.map(renderEntry).join('');
+    }
+
+    function renderEntry(entry) {
+      const actionClass = entry.action === 'Swapped' ? 'log-action-swapped' : 'log-action-moved';
+      const company = Shell.escapeHtml(entry.company || entry.leadId || 'Unnamed lead');
+      const leadId = entry.leadId ? `<div class="lead-id">ID:${Shell.escapeHtml(Shell.shortLeadId(entry.leadId))}</div>` : '';
+      const swapDetail = entry.action === 'Swapped'
+        ? `<div class="log-detail"><span class="log-detail-label">Old P1:</span> ${Shell.escapeHtml(entry.oldP1Name || '—')} <span class="log-arrow">→</span> <span class="log-detail-label">New P1:</span> ${Shell.escapeHtml(entry.newP1Name || '—')}</div>`
+        : `<div class="log-detail"><span class="log-detail-label">Old P1:</span> ${Shell.escapeHtml(entry.oldP1Name || '—')}</div>`;
+      return `
+        <article class="lead-card" data-row="${Shell.escapeAttr(entry.rowNumber)}">
+          <div class="firm-row">
+            <div class="firm-link"><span>${company}</span></div>
+            ${leadId}
+          </div>
+          <div class="log-body">
+            <div class="log-meta">
+              <span class="log-action ${actionClass}">${Shell.escapeHtml(entry.action || '')}</span>
+              <span class="log-time">${Shell.escapeHtml(formatTimestamp(entry.runAt))}</span>
+            </div>
+            ${swapDetail}
+            <div class="log-reason">Match: ${Shell.escapeHtml(entry.reason || 'Unknown')}</div>
+          </div>
+        </article>
+      `;
+    }
+
+    function formatTimestamp(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      const parsed = new Date(raw);
+      if (isNaN(parsed.getTime())) return raw;
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+    }
+
+    function updateControls() {
+      if (!els) return;
+      els.refreshButton.disabled = Shell.isBusy();
+    }
+
+    return { init, load, updateControls };
+  })();
+</script>

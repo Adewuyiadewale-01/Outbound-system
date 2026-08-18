@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Control Center</title>
+  <link rel="stylesheet" href="drawer.css">
+</head>
+<body>
+  <div class="app-container" id="appContainer">
+    <!-- Main Scrollable Pane -->
+    <div class="main-panel">
+
+      <!-- Top Plan Summary / Title Container -->
+      <div class="plan-header">
+        <div class="header-title-row">
+          <h1 class="plan-title">Planned</h1>
+          <button id="closeAppBtn" title="Minimize back to handle">&times;</button>
+        </div>
+
+        <!-- Filter Capsules (repurposed from Microsoft To-Do filter pills) -->
+        <div class="filter-bar">
+          <button class="filter-pill active" data-filter="all">
+            <svg class="pill-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg> All Planned
+          </button>
+          <button class="filter-pill" data-filter="activity">
+            <svg class="pill-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg> Activity Check
+          </button>
+          <button class="filter-pill" data-filter="followup">
+            <svg class="pill-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg> Follow-ups
+          </button>
+          <button class="filter-pill" data-filter="withdrawal">
+            <svg class="pill-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg> Withdrawals
+          </button>
+          <button class="filter-pill" data-filter="history">
+            <svg class="pill-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg> History
+          </button>
+        </div>
+
+        <!-- Daily Tasks Progress Bar -->
+        <div class="progress-container">
+          <div class="progress-header-row">
+            <span class="progress-title">Daily Progress</span>
+            <span class="progress-fraction" id="progressFraction">0 / 8 completed</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+        </div>
+
+        <!-- Global Utility Actions Shelf -->
+        <div class="global-actions-shelf">
+          <div class="utility-control" id="watcherControl">
+            <button class="utility-btn watcher-btn" id="watcherBtn" title="Toggle background Auto-Watcher scheduling">
+              <svg class="btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg> Watcher: OFF
+            </button>
+          </div>
+          <div class="utility-control" id="caffeinateControl">
+            <button class="utility-btn" id="caffeinateBtn" title="Prevent system sleep">
+              <svg class="btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path><line x1="6" y1="1" x2="6" y2="4"></line><line x1="10" y1="1" x2="10" y2="4"></line><line x1="14" y1="1" x2="14" y2="4"></line></svg> Caffeinate
+            </button>
+            <select class="utility-select" id="caffeinateDuration" title="Keep-awake duration">
+              <option value="1800">30 min</option>
+              <option value="3600" selected>1 hr</option>
+              <option value="7200">2 hrs</option>
+              <option value="14400">4 hrs</option>
+              <option value="28800">8 hrs</option>
+              <option value="infinite">Indefinite</option>
+            </select>
+          </div>
+
+          <button class="utility-btn secondary-utility-btn" id="launchChromeBtn" title="Launch automation Chrome profile">
+            <svg class="btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg> Launch Chrome
+          </button>
+        </div>
+
+        <!-- Schedule Overview Row -->
+        <div class="schedule-overview" id="scheduleOverview">
+          <div class="schedule-item" title="Starts at 11:40 and automatically chains every 2 hours until the daily queue is complete."><span class="schedule-time">11:40</span> <span class="schedule-label">Follow-ups (Auto-chains)</span></div>
+          <div class="schedule-item" title="Starts at 18:00 and automatically chains every 2 hours until connection withdrawals are complete."><span class="schedule-time">18:00</span> <span class="schedule-label">Withdrawals (Auto-chains)</span></div>
+          <div class="schedule-item"><span class="schedule-time">21:00</span> <span class="schedule-label">Activity Check</span></div>
+        </div>
+      </div>
+
+      <!-- Main Categories Accordion -->
+      <div class="content-body" id="contentBody">
+
+        <!-- ACTIVITY CHECK SECTION -->
+        <div class="category-section" id="section-activity">
+          <div class="category-header expanded" data-section="activity">
+            <span class="accordion-arrow">▼</span> Activity Check
+          </div>
+
+          <div class="category-content">
+            <!-- Sub-container 1: Controls & Real-Time Monitoring (First) -->
+            <div class="sub-container controls-monitor-panel">
+              <div class="sub-header">Trigger Controls</div>
+              <div class="button-group">
+                <button class="trigger-btn primary-btn" data-script="scripts/check_prefinal_activity.py" data-args='[]' id="btn-act-full">
+                  Run Full Flow
+                </button>
+                <button class="trigger-btn secondary-btn" data-script="scripts/check_prefinal_activity.py" data-args='["--prepare-only"]' id="btn-act-prep">
+                  Prepare Only
+                </button>
+                <button class="trigger-btn secondary-btn" data-script="scripts/check_prefinal_activity.py" data-args='["--activity-only"]' id="btn-act-run">
+                  Check Activity Only
+                </button>
+                <button class="trigger-btn danger-trigger-btn icon-only-btn btn-stop-run" title="Terminate Run">
+                  <svg class="btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+                </button>
+              </div>
+
+              <div class="monitor-panel">
+                <div class="sub-header">Real-Time Metrics</div>
+                <div class="monitor-grid">
+                  <div class="monitor-status-row">
+                    <span class="monitor-lbl">Status:</span>
+                    <span class="monitor-val idle" id="actMonitorStatus">Idle</span>
+                  </div>
+                  <div class="monitor-status-row">
+                    <span class="monitor-lbl">Running Timer:</span>
+                    <span class="monitor-val timer-val" id="actMonitorTimer">00m 00s</span>
+                  </div>
+                  <div class="monitor-status-row">
+                    <span class="monitor-lbl">Progress:</span>
+                    <span class="monitor-val" id="actMonitorProgress">0 / 0 resolved</span>
+                  </div>
+                </div>
+                <div class="chart-progress"><div class="chart-fill" id="actChartFill" style="width: 0%"></div></div>
+              </div>
+            </div>
+
+            <!-- Sub-container 2: Read-only Checklist (Second) -->
+            <div class="sub-container checklist-container">
+              <div class="sub-header">Checklist State</div>
+              <div class="task-list">
+                <div class="task-item static-task" id="check-act-prep">
+                  <div class="task-checkbox"></div>
+                  <div class="task-info">
+                    <div class="task-name">Prepare local state</div>
+                    <div class="task-desc">Today's LinkedIn targets session data compiled</div>
+                  </div>
+                </div>
+
+                <div class="task-item static-task" id="check-act-run">
+                  <div class="task-checkbox"></div>
+                  <div class="task-info">
+                    <div class="task-name">Activity rows checked</div>
+                    <div class="task-desc">LinkedIn profile activity verified & final rows bridged</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- FOLLOW-UPS SECTION -->
+        <div class="category-section" id="section-followup">
+          <div class="category-header expanded" data-section="followup">
+            <span class="accordion-arrow">▼</span> Follow-up Send Passes
+          </div>
+
+          <div class="category-content">
+            <!-- Sub-container 1: Controls & Real-Time Monitoring (First) -->
+            <div class="sub-container controls-monitor-panel">
+              <div class="sub-header">Trigger Controls</div>
+              <div class="button-group">
+                <button class="trigger-btn primary-btn" data-script="scripts/linkedin_followup_runner.py" data-args='["--mode", "run"]' id="btn-fu-run">
+                  Daytime Send
+                </button>
+                <button class="trigger-btn secondary-btn" data-script="scripts/linkedin_followup_runner.py" data-args='["--prepare-only"]' id="btn-fu-prep">
+                  Prepare Leads
+                </button>
+                <button class="trigger-btn danger-trigger-btn icon-only-btn btn-stop-run" title="Terminate Run">
+                  <svg class="btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+                </button>
+              </div>
+
+              <div class="monitor-panel">
+                <div class="sub-header">Real-Time Metrics</div>
+                <div class="monitor-grid">
+                  <div class="monitor-status-row">
+                    <span class="monitor-lbl">Status:</span>
+                    <span class="monitor-val idle" id="fuMonitorStatus">Idle</span>
+                  </div>
+                  <div class="monitor-status-row">
+                    <span class="monitor-lbl">Running Timer:</span>
+                    <span class="monitor-val timer-val" id="fuMonitorTimer">00m 00s</span>
+                  </div>
+                  <div class="monitor-status-row">
+                    <span class="monitor-lbl">Progress:</span>
+                    <span class="monitor-val" id="fuMonitorProgress">0 / 0 dispatched</span>
+                  </div>
+                </div>
+                <div class="chart-progress"><div class="chart-fill" id="fuChartFill" style="width: 0%"></div></div>
+              </div>
+            </div>
+
+            <!-- Sub-container 2: Read-only Checklist (Second) -->
+            <div class="sub-container checklist-container">
+              <div class="sub-header">Checklist State</div>
+              <div class="task-list">
+                <div class="task-item static-task" id="check-fu-prep">
+                  <div class="task-checkbox"></div>
+                  <div class="task-info">
+                    <div class="task-name">Prepare due leads</div>
+                    <div class="task-desc">Leads evaluated & follow-up messages templates matched</div>
+                  </div>
+                </div>
+
+                <div class="task-item static-task" id="check-fu-run">
+                  <div class="task-checkbox"></div>
+                  <div class="task-info">
+                    <div class="task-name">Execution send passes</div>
+                    <div class="task-desc">Dispatched follow-up templates to due targets in batches</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- WITHDRAWALS SECTION -->
+        <div class="category-section" id="section-withdrawal">
+          <div class="category-header expanded" data-section="withdrawal">
+            <span class="accordion-arrow">▼</span> Connection Withdrawals
+          </div>
+
+          <div class="category-content">
+            <!-- Sub-container 1: Controls & Real-Time Monitoring (First) -->
+            <div class="sub-container controls-monitor-panel">
+              <div class="sub-header">Trigger Controls</div>
+              <div class="button-group">
+                <button class="trigger-btn primary-btn" data-multi-scripts='[{"path":"scripts/backfill_withdrawal_countdown.py","args":[]},{"path":"scripts/prepare_connection_withdrawals.py","args":[]},{"path":"scripts/withdraw_connections.py","args":[]}]' id="btn-wd-full">
+                  Run Full Flow
+                </button>
+                <button class="trigger-btn secondary-btn" data-multi-scripts='[{"path":"scripts/backfill_withdrawal_countdown.py","args":[]},{"path":"scripts/prepare_connection_withdrawals.py","args":[]}]' id="btn-wd-prep">
+                  Prepare Batches
+                </button>
+                <button class="trigger-btn secondary-btn" data-script="scripts/withdraw_connections.py" data-args='[]' id="btn-wd-run">
+                  Execute Withdrawals
+                </button>
+                <button class="trigger-btn danger-trigger-btn icon-only-btn btn-stop-run" title="Terminate Run">
+                  <svg class="btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+                </button>
+              </div>
+
+              <div class="monitor-panel">
+                <div class="sub-header">Real-Time Metrics</div>
+                <div class="monitor-grid">
+                  <div class="monitor-status-row">
+                    <span class="monitor-lbl">Status:</span>
+                    <span class="monitor-val idle" id="wdMonitorStatus">Idle</span>
+                  </div>
+                  <div class="monitor-status-row">
+                    <span class="monitor-lbl">Running Timer:</span>
+                    <span class="monitor-val timer-val" id="wdMonitorTimer">00m 00s</span>
+                  </div>
+                  <div class="monitor-status-row">
+                    <span class="monitor-lbl">Progress:</span>
+                    <span class="monitor-val" id="wdMonitorProgress">0 / 0 withdrawn</span>
+                  </div>
+                </div>
+                <div class="cooldown-badge" id="wdCooldownVal" style="display: none;">Cooldown active</div>
+                <div class="chart-progress"><div class="chart-fill" id="wdChartFill" style="width: 0%"></div></div>
+              </div>
+            </div>
+
+            <!-- Sub-container 2: Read-only Checklist (Second) -->
+            <div class="sub-container checklist-container">
+              <div class="sub-header">Checklist State</div>
+              <div class="task-list">
+                <div class="task-item static-task" id="check-wd-prep">
+                  <div class="task-checkbox"></div>
+                  <div class="task-info">
+                    <div class="task-name">Prepare withdrawals sequence</div>
+                    <div class="task-desc">Calculated request countdowns and compiled batches</div>
+                  </div>
+                </div>
+
+                <div class="task-item static-task" id="check-wd-run">
+                  <div class="task-checkbox"></div>
+                  <div class="task-info">
+                    <div class="task-name">Execute batch withdrawals</div>
+                    <div class="task-desc">Dispatched withdrawal invites commands</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TODAY'S QUEUE MODULE (DASHBOARD HIGHLIGHTS) -->
+        <div class="category-section" id="section-queue">
+          <div class="category-header expanded" data-section="queue">
+            <span class="accordion-arrow">▼</span> Active Today's Queue
+          </div>
+
+          <div class="category-content">
+            <div class="queue-list" id="queueList">
+              <div class="empty-state">No prepared session queue found. Run a prepare task to populate.</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- HISTORY MODULE -->
+      <div class="category-section" id="section-history" style="display: none;">
+        <div class="category-header expanded" data-section="history">
+          <span class="accordion-arrow">▼</span> Historical Completions
+        </div>
+
+        <div class="category-content">
+          <div class="history-list" id="historyList">
+            <div class="empty-state">Loading history...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Parameter Setup Overlay Drawer (Slides up when a task needs input) -->
+      <div class="parameter-drawer" id="paramDrawer">
+        <div class="drawer-header">
+          <h3 id="paramTitle">Task Parameters</h3>
+          <button id="closeParamBtn">&times;</button>
+        </div>
+        <div class="drawer-content">
+          <div class="input-group">
+            <label for="paramLimit" id="paramLimitLabel">Target Limit Count:</label>
+            <input type="number" id="paramLimit" min="1" max="100" value="5">
+          </div>
+          <button class="primary-btn" id="launchWithParamBtn">Launch Automation</button>
+        </div>
+      </div>
+
+      <!-- Log Terminal Console at bottom (collapsible, styled neutrally) -->
+      <div class="console-panel" id="consolePanel">
+        <div class="console-header">
+          <div class="console-status">
+            <span class="status-indicator idle" id="consoleStatusIndicator"></span>
+            <span id="consoleStatusText">Console Idle</span>
+          </div>
+          <div class="console-controls">
+            <label class="auto-scroll-label"><input type="checkbox" id="autoScrollCheck" checked> Auto-Scroll</label>
+            <button id="clearConsoleBtn">Clear Logs</button>
+            <button id="stopProcessBtn" class="danger-btn" style="display: none;">Stop</button>
+            <button id="toggleConsoleBtn">▲</button>
+          </div>
+        </div>
+        <div class="console-log" id="consoleLog">
+          <div class="system-message">Welcome to Outreach Control Center. Ready for orchestration...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="drawer.js"></script>
+</body>
+</html>

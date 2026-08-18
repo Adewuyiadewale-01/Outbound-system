@@ -1,0 +1,26 @@
+I want you to conduct extensive research about {{companyWebsite}} and {{contactName}}, the exec I am reaching out to. The findings in that research need to be extensive and include uncommon facts about them buried in their website or publicly available documents.
+
+{{contactLinkedinLine}}
+The research will be used for understanding the company and also used to replace the necessary part of this template, particularly the opening.
+
+The message template: Thanks for connecting, [FirstName]. For what it's worth, it's insanely rare to see firms in your space capitalizing on volatility rather than running from it.
+
+To be honest, it didn't fully make sense to me until I read further on the funds page. [DummyCompany] is pulling pretty awesome results from exactly where most of the world runs.
+
+That said, I went deeper than the homepage when reviewing [DummyCompany], and a few specific things stood out: places where the digital presence doesn't match the level of work happening behind it. Mostly around how trust actually gets built, or quietly lost, before anyone at your firm ever speaks to the person evaluating you.
+
+I put together a detailed PDF audit just for [DummyCompany]. Or if you'd prefer, I can record a 5-minute video walkthrough instead.
+
+Would you be open to me sending it over?
+
+No strings attached. My hope is simply that the quality of the work earns a future conversation. If not, the insights are yours to keep.
+
+Quick context: I run FixMyPresence, a studio focused entirely on digital presence for investment and advisory firms. No other verticals, no side work. This is the only thing we do.
+
+[PersonalNote]
+
+Best,
+
+Tony
+
+Now I want you to find everything that is to be found about the company and the person.

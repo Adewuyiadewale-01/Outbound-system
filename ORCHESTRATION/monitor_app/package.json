@@ -1,0 +1,17 @@
+{
+  "name": "orchestration-control-center",
+  "version": "1.0.0",
+  "description": "Desktop control center for automations",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "package:mac": "electron-packager . \"Orchestration Control Center\" --platform=darwin --arch=arm64 --out=dist --overwrite --prune=true --asar --app-bundle-id=com.outreachautomation.control-center"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.9"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.0.4",
+    "electron": "43.2.0"
+  }
+}

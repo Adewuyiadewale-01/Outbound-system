@@ -1,0 +1,321 @@
+<script>
+  const LeadActivity = (() => {
+    const state = {
+      leads: [],
+      activityValues: ['', 'Very active', 'Active', 'Not active'],
+      lastPayload: null,
+      bridgeQueue: null,
+    };
+    let els = null;
+
+    function init() {
+      els = {
+        leadList: document.getElementById('leadList'),
+        sanitizeButton: document.getElementById('sanitizeButton'),
+        bridgeWrap: document.getElementById('bridgeWrap'),
+        bridgeButton: document.getElementById('bridgeButton'),
+        bridgeMenu: document.getElementById('bridgeMenu'),
+        bridgeFinalOption: document.getElementById('bridgeFinalOption'),
+        bridgeProspectsOption: document.getElementById('bridgeProspectsOption'),
+        totalCount: document.getElementById('totalCount'),
+        hyperCount: document.getElementById('hyperCount'),
+        highCount: document.getElementById('highCount'),
+        mediumCount: document.getElementById('mediumCount'),
+        lowCount: document.getElementById('lowCount'),
+      };
+      els.sanitizeButton.addEventListener('click', runSanitize);
+      els.bridgeButton.addEventListener('click', runBridge);
+      els.bridgeFinalOption.addEventListener('click', () => {
+        setBridgeMenuOpen(false);
+        bridgeVisible();
+      });
+      els.bridgeProspectsOption.addEventListener('click', () => {
+        setBridgeMenuOpen(false);
+        bridgeToProspects();
+      });
+      document.addEventListener('click', (event) => {
+        if (!event.target.closest('.bridge-wrap')) {
+          setBridgeMenuOpen(false);
+        }
+      });
+    }
+
+    function load() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setLoading(false);
+        Shell.setStatus('Local preview only. Use the deployed web app to load sheet data.', false);
+        els.leadList.innerHTML = '<div class="empty">Open the deployed Apps Script web app to load leads.</div>';
+        return;
+      }
+      Shell.setLoading(true);
+      Shell.setStatus('Loading', false);
+      google.script.run
+        .withSuccessHandler((payload) => {
+          state.lastPayload = payload;
+          state.leads = payload.leads || [];
+          state.activityValues = payload.activityValues || state.activityValues;
+          Shell.updateWorkflowState(payload.workflowState);
+          Shell.setSubtitle(`${payload.sourceTabName || 'Pre-final'} → ${payload.finalTabName || 'Final'}`);
+          updateStats(payload.categoryCounts || {});
+          Shell.setStatus('', false);
+          Shell.setLoading(false);
+          render();
+        })
+        .withFailureHandler((error) => {
+          Shell.setLoading(false);
+          Shell.setStatus(error.message || String(error), true);
+          els.leadList.innerHTML = '<div class="empty">Could not load leads.</div>';
+        })
+        .getLeadPayload({ mode: 'pending', search: '' });
+    }
+
+    function updateStats(counts) {
+      els.totalCount.textContent = state.leads.length || 0;
+      els.hyperCount.textContent = counts.Hyper || 0;
+      els.highCount.textContent = counts.High || 0;
+      els.mediumCount.textContent = counts.Medium || 0;
+      els.lowCount.textContent = counts.Low || 0;
+    }
+
+    function render() {
+      if (!state.leads.length) {
+        els.leadList.innerHTML = '<div class="empty">No matching leads.</div>';
+        return;
+      }
+      els.leadList.innerHTML = state.leads.map(renderLead).join('');
+      bindControls();
+    }
+
+    function renderLead(lead) {
+      return `
+        <article class="lead-card" data-row="${Shell.escapeAttr(lead.rowNumber)}">
+          <div class="firm-row">
+            ${renderFirm(lead)}
+            <div class="lead-id">ID:${Shell.escapeHtml(Shell.shortLeadId(lead.id))}</div>
+          </div>
+          ${renderPerson(lead, 'P1', lead.p1)}
+          ${renderPerson(lead, 'P2', lead.p2)}
+        </article>
+      `;
+    }
+
+    function renderFirm(lead) {
+      const label = Shell.escapeHtml(lead.company || lead.id || 'Unnamed lead');
+      if (!lead.website) {
+        return `<div class="firm-link"><span>${label}</span></div>`;
+      }
+      return `<a class="firm-link" href="${Shell.escapeAttr(lead.website)}" target="_blank" rel="noopener"><span>${label}</span></a>`;
+    }
+
+    function renderPerson(lead, prefix, person) {
+      const hasAny = person && (person.name || person.title || person.linkedin);
+      if (!hasAny) {
+        return '';
+      }
+      const linkedinClass = person.linkedin ? 'linkedin-field' : 'linkedin-field disabled';
+      const linkedinHref = person.linkedin ? `href="${Shell.escapeAttr(person.linkedin)}" target="_blank" rel="noopener"` : '';
+      return `
+        <section class="person">
+          <div class="person-label">${prefix}</div>
+          <div class="field-grid identity-grid">
+            <div class="field-shell">
+              <div class="field-label">Name:</div>
+              <div class="readonly-field">${Shell.escapeHtml(person.name || '')}</div>
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Role:</div>
+              <div class="readonly-field">${Shell.escapeHtml(person.title || '')}</div>
+            </div>
+          </div>
+          <div class="field-grid action-grid">
+            <div class="field-shell">
+              <div class="field-label">Linkedin:</div>
+              <a class="${linkedinClass}" ${linkedinHref}>${Shell.escapeHtml(person.linkedin || 'Nil')}</a>
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Activity:</div>
+              ${renderActivitySelect(lead.rowNumber, prefix, person.activity)}
+            </div>
+          </div>
+        </section>
+      `;
+    }
+
+    function renderActivitySelect(rowNumber, prefix, currentValue) {
+      const value = currentValue || '';
+      const options = state.activityValues.map((item) => {
+        const label = item || 'Blank';
+        const selected = item === value ? 'selected' : '';
+        return `<option value="${Shell.escapeAttr(item)}" ${selected}>${Shell.escapeHtml(label)}</option>`;
+      }).join('');
+      return `<select class="activity ${activityClass(value)}" data-row="${Shell.escapeAttr(rowNumber)}" data-person="${Shell.escapeAttr(prefix)}">${options}</select>`;
+    }
+
+    function bindControls() {
+      els.leadList.querySelectorAll('.activity').forEach((select) => {
+        select.addEventListener('change', () => {
+          select.className = `activity ${activityClass(select.value)}`;
+        });
+      });
+    }
+
+    function activityClass(value) {
+      if (value === 'Very active') return 'is-very-active';
+      if (value === 'Active') return 'is-active';
+      if (value === 'Not active') return 'is-not-active';
+      return '';
+    }
+
+    function collectBridgeItems() {
+      return Array.from(els.leadList.querySelectorAll('.lead-card')).map((card) => {
+        const rowNumber = Number(card.dataset.row);
+        const p1Select = card.querySelector('.activity[data-person="P1"]');
+        const p2Select = card.querySelector('.activity[data-person="P2"]');
+        return {
+          rowNumber,
+          activities: {
+            p1Activity: p1Select ? p1Select.value : '',
+            p2Activity: p2Select ? p2Select.value : '',
+          },
+        };
+      }).filter((item) => Number.isInteger(item.rowNumber) && item.rowNumber > 1);
+    }
+
+    function setInputsDisabled(disabled) {
+      els.leadList.querySelectorAll('.activity').forEach((select) => {
+        select.disabled = disabled;
+      });
+      Shell.setBusy(disabled);
+      if (disabled) {
+        setBridgeMenuOpen(false);
+      }
+    }
+
+    function setBridgeProgress(done, total) {
+      els.bridgeButton.classList.add('progressing');
+      els.bridgeButton.innerHTML = `<span class="spinner"></span><span>${done}/${total}</span>`;
+    }
+
+    function resetBridgeButton() {
+      els.bridgeButton.classList.remove('progressing');
+      Shell.updateGateControls();
+    }
+
+    function submitBridgeBatch(items, done, total, finalChunk) {
+      google.script.run
+        .withSuccessHandler((result) => {
+          Shell.updateWorkflowState(result.workflowState);
+          const nextDone = done + (result.processed || items.length);
+          setBridgeProgress(nextDone, total);
+          window.setTimeout(() => bridgeNextChunk(nextDone, total), 80);
+        })
+        .withFailureHandler((error) => {
+          resetBridgeButton();
+          els.bridgeButton.disabled = false;
+          setInputsDisabled(false);
+          Shell.setStatus(error.message || String(error), true);
+        })
+        .submitLeadBatchToFinal(items, { finalChunk });
+    }
+
+    function bridgeNextChunk(done, total) {
+      const queue = state.bridgeQueue || [];
+      if (!queue.length) {
+        resetBridgeButton();
+        els.bridgeButton.disabled = false;
+        setInputsDisabled(false);
+        Shell.setStatus(`Bridged ${done} leads`, false);
+        window.setTimeout(() => load(), 700);
+        return;
+      }
+      const chunk = queue.splice(0, 5);
+      state.bridgeQueue = queue;
+      submitBridgeBatch(chunk, done, total, queue.length === 0);
+    }
+
+    function bridgeVisible() {
+      const items = collectBridgeItems();
+      if (!items.length) {
+        Shell.setStatus('No leads to bridge', false);
+        return;
+      }
+      state.bridgeQueue = items.slice();
+      els.bridgeButton.disabled = true;
+      setInputsDisabled(true);
+      Shell.setStatus('Bridging to Final', false);
+      setBridgeProgress(0, items.length);
+      bridgeNextChunk(0, items.length);
+    }
+
+    function runSanitize() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setStatus('Use the deployed web app to run Sanitize.', true);
+        return;
+      }
+      Shell.setBusy(true);
+      els.sanitizeButton.innerHTML = '<span class="spinner"></span>';
+      Shell.setStatus('Sanitizing Final', false);
+      google.script.run
+        .withSuccessHandler((result) => {
+          Shell.setBusy(false);
+          Shell.updateWorkflowState(result.workflowState);
+          Shell.setStatus(`Sanitized: ${result.rowsSwapped || 0} swapped, ${result.rowsMovedToCopy || 0} moved`, false);
+          load();
+        })
+        .withFailureHandler((error) => {
+          Shell.setBusy(false);
+          Shell.setStatus(error.message || String(error), true);
+        })
+        .runSanitize();
+    }
+
+    function bridgeToProspects() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setStatus('Use the deployed web app to bridge leads.', true);
+        return;
+      }
+      Shell.setBusy(true);
+      els.bridgeButton.classList.add('progressing');
+      els.bridgeButton.innerHTML = '<span class="spinner"></span><span>Finish</span>';
+      Shell.setStatus('Bridging Final to Prospects', false);
+      google.script.run
+        .withSuccessHandler((result) => {
+          Shell.setBusy(false);
+          Shell.updateWorkflowState(result.workflowState);
+          els.bridgeButton.classList.remove('progressing');
+          Shell.setStatus(`Finished: ${result.appended || 0} added, ${result.skippedExisting || 0} already existed, ${result.skippedUnranked || 0} unranked`, false);
+        })
+        .withFailureHandler((error) => {
+          Shell.setBusy(false);
+          els.bridgeButton.classList.remove('progressing');
+          Shell.setStatus(error.message || String(error), true);
+        })
+        .bridgeFinalToProspects();
+    }
+
+    function runBridge() {
+      if (els.bridgeButton.disabled) return;
+      setBridgeMenuOpen(!els.bridgeMenu.classList.contains('is-open'));
+    }
+
+    function setBridgeMenuOpen(open) {
+      els.bridgeMenu.classList.toggle('is-open', Boolean(open));
+      els.bridgeButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+
+    function updateControls() {
+      if (!els) return;
+      const busy = Shell.isBusy();
+      const workflow = Shell.getWorkflowState();
+      els.sanitizeButton.disabled = busy;
+      els.sanitizeButton.textContent = workflow.sanitizeDone ? 'Sanitized' : 'Sanitize';
+      els.bridgeButton.disabled = busy;
+      els.bridgeButton.textContent = 'Bridge';
+      els.bridgeFinalOption.disabled = busy;
+      els.bridgeProspectsOption.disabled = busy;
+      if (busy) setBridgeMenuOpen(false);
+    }
+
+    return { init, load, updateControls };
+  })();
+</script>

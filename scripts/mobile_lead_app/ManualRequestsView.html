@@ -1,0 +1,334 @@
+<script>
+  const ManualRequests = (() => {
+    const STATUS_OPTIONS = [
+      { value: '', label: 'New', key: 'new' },
+      { value: 'Connection Sent', label: 'Connection Sent', key: 'connection_sent' },
+      { value: 'Connected', label: 'Connected', key: 'connected' },
+    ];
+    const ENGAGED_OPTIONS = [
+      { value: 'Person 1', label: 'Person 1' },
+      { value: 'Person 2', label: 'Person 2' },
+    ];
+
+    const state = {
+      leads: [],
+      counts: { all: 0, new: 0, connection_sent: 0, connected: 0 },
+      filter: 'all',
+      pipelineGuard: { blocked: false, overdueCount: 0, worstOverdueDays: 0 },
+      dirty: new Set(),
+    };
+    let els = null;
+
+    function init() {
+      els = {
+        list: document.getElementById('manualRequestsList'),
+        filterSelect: document.getElementById('manualRequestsFilter'),
+        saveButton: document.getElementById('manualRequestsSaveButton'),
+        totalCount: document.getElementById('manualRequestsTotalCount'),
+        newCount: document.getElementById('manualRequestsNewCount'),
+        sentCount: document.getElementById('manualRequestsSentCount'),
+        connectedCount: document.getElementById('manualRequestsConnectedCount'),
+      };
+      els.filterSelect.addEventListener('change', () => {
+        state.filter = els.filterSelect.value;
+        load();
+      });
+      els.saveButton.addEventListener('click', save);
+      window.addEventListener('resize', updateGuardPosition);
+    }
+
+    function load() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setLoading(false);
+        Shell.setStatus('Local preview only. Use the deployed web app to load Prospects.', false);
+        els.list.innerHTML = '<div class="empty">Open the deployed Apps Script web app to load prospects.</div>';
+        return;
+      }
+      Shell.setLoading(true);
+      Shell.setStatus('Loading', false);
+      els.list.innerHTML = '<div class="empty">Loading prospects...</div>';
+      google.script.run
+        .withSuccessHandler((payload) => {
+          state.leads = payload.leads || [];
+          state.counts = payload.counts || state.counts;
+          state.filter = payload.filter || state.filter;
+          state.pipelineGuard = payload.pipelineGuard || { blocked: false, overdueCount: 0, worstOverdueDays: 0 };
+          state.dirty.clear();
+          els.filterSelect.value = state.filter;
+          Shell.setSubtitle(payload.prospectsTabName || 'Prospects');
+          updateStats();
+          updateSaveButton();
+          Shell.setLoading(false);
+          Shell.setStatus('', false);
+          render();
+          updateGuardPosition();
+        })
+        .withFailureHandler((error) => {
+          Shell.setLoading(false);
+          Shell.setStatus(error.message || String(error), true);
+          els.list.innerHTML = '<div class="empty">Could not load prospects.</div>';
+        })
+        .getManualRequestsPayload({ filter: state.filter });
+    }
+
+    function updateStats() {
+      els.totalCount.textContent = state.counts.all || 0;
+      els.newCount.textContent = state.counts.new || 0;
+      els.sentCount.textContent = state.counts.connection_sent || 0;
+      els.connectedCount.textContent = state.counts.connected || 0;
+    }
+
+    function render() {
+      const guarded = isGuarded();
+      els.list.classList.toggle('is-guarded', guarded);
+      const guardOverlay = guarded ? renderGuardOverlay() : '';
+      if (!state.leads.length) {
+        els.list.innerHTML = `<div class="empty">No prospects match this filter.</div>${guardOverlay}`;
+        bindControls();
+        updateGuardPosition();
+        return;
+      }
+      els.list.innerHTML = `${state.leads.map(renderLead).join('')}${guardOverlay}`;
+      bindControls();
+      updateGuardPosition();
+    }
+
+    function renderGuardOverlay() {
+      const guard = state.pipelineGuard || {};
+      const overdueCount = Number(guard.overdueCount || 0);
+      return `
+        <div class="manual-guard-overlay">
+          <div class="manual-guard-panel">
+            <div class="manual-guard-title">Pipeline overdue guard active</div>
+            <div class="manual-guard-text">${Shell.escapeHtml(overdueCount)} Pipeline lead${overdueCount === 1 ? '' : 's'} ${overdueCount === 1 ? 'is' : 'are'} at least 2 days overdue. Clear Pipeline before working new manual requests.</div>
+            <button class="manual-guard-button" id="manualGuardPipelineButton" type="button">Go to Pipeline</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderLead(lead) {
+      const statusKey = lead.statusKey || classifyStatus(lead.outreachStatus);
+      return `
+        <article class="lead-card" data-row="${Shell.escapeAttr(lead.rowNumber)}">
+          <div class="firm-row">
+            ${renderFirm(lead)}
+            <div class="lead-id">ID:${Shell.escapeHtml(Shell.shortLeadId(lead.id))}</div>
+          </div>
+          <div class="prospect-controls">
+            <div class="field-shell">
+              <div class="field-label">Status:</div>
+              ${renderStatusSelect(lead, statusKey)}
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Engaged:</div>
+              ${renderEngagedSelect(lead)}
+            </div>
+          </div>
+          ${renderPerson('P1', lead.p1, lead.rowNumber)}
+          ${renderPerson('P2', lead.p2, lead.rowNumber)}
+        </article>
+      `;
+    }
+
+    function renderFirm(lead) {
+      const label = Shell.escapeHtml(lead.company || lead.id || 'Unnamed prospect');
+      if (!lead.website) {
+        return `<div class="firm-link"><span>${label}</span></div>`;
+      }
+      return `<a class="firm-link" href="${Shell.escapeAttr(lead.website)}" target="_blank" rel="noopener"><span>${label}</span></a>`;
+    }
+
+    function renderStatusSelect(lead, statusKey) {
+      const current = lead.outreachStatus || '';
+      const options = augmentOptions(STATUS_OPTIONS, current).map((option) => {
+        const selected = option.value === current ? 'selected' : '';
+        return `<option value="${Shell.escapeAttr(option.value)}" ${selected}>${Shell.escapeHtml(option.label)}</option>`;
+      }).join('');
+      return `<select class="status-select status-${Shell.escapeAttr(statusKey)}" data-row="${Shell.escapeAttr(lead.rowNumber)}" data-field="outreachStatus">${options}</select>`;
+    }
+
+    function renderEngagedSelect(lead) {
+      const current = lead.engagedPerson || '';
+      const options = augmentOptions(ENGAGED_OPTIONS, current).map((option) => {
+        const selected = option.value === current ? 'selected' : '';
+        return `<option value="${Shell.escapeAttr(option.value)}" ${selected}>${Shell.escapeHtml(option.label)}</option>`;
+      }).join('');
+      return `<select class="engaged-select" data-row="${Shell.escapeAttr(lead.rowNumber)}" data-field="engagedPerson">${options}</select>`;
+    }
+
+    function augmentOptions(baseOptions, currentValue) {
+      const exists = baseOptions.some((opt) => opt.value === currentValue);
+      if (exists) return baseOptions;
+      return baseOptions.concat([{ value: currentValue, label: currentValue || 'Blank' }]);
+    }
+
+    function renderPerson(prefix, person, rowNumber) {
+      const hasAny = person && (person.name || person.title || person.linkedin);
+      if (!hasAny) return '';
+      const linkedinClass = person.linkedin ? 'linkedin-field manual-linkedin' : 'linkedin-field disabled';
+      const linkedinHref = person.linkedin
+        ? `href="${Shell.escapeAttr(person.linkedin)}" target="_blank" rel="noopener" data-row="${Shell.escapeAttr(rowNumber)}"`
+        : '';
+      const activityValue = person.activity || '';
+      return `
+        <section class="person">
+          <div class="person-label">${prefix}</div>
+          <div class="field-grid identity-grid">
+            <div class="field-shell">
+              <div class="field-label">Name:</div>
+              <div class="readonly-field">${Shell.escapeHtml(person.name || '')}</div>
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Role:</div>
+              <div class="readonly-field">${Shell.escapeHtml(person.title || '')}</div>
+            </div>
+          </div>
+          <div class="field-grid action-grid">
+            <div class="field-shell">
+              <div class="field-label">Linkedin:</div>
+              <a class="${linkedinClass}" ${linkedinHref}>${Shell.escapeHtml(person.linkedin || 'Nil')}</a>
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Activity:</div>
+              <div class="readonly-field activity ${activityClass(activityValue)}">${Shell.escapeHtml(activityValue)}</div>
+            </div>
+          </div>
+        </section>
+      `;
+    }
+
+    function bindControls() {
+      const guardButton = document.getElementById('manualGuardPipelineButton');
+      if (guardButton) {
+        guardButton.addEventListener('click', () => Shell.switchView('pipeline'));
+      }
+      els.list.querySelectorAll('.status-select').forEach((select) => {
+        select.addEventListener('change', () => {
+          const rowNumber = Number(select.dataset.row);
+          const lead = state.leads.find((item) => Number(item.rowNumber) === rowNumber);
+          if (!lead) return;
+          lead.outreachStatus = select.value;
+          lead.statusKey = classifyStatus(select.value);
+          select.className = `status-select status-${lead.statusKey}`;
+          state.dirty.add(rowNumber);
+          updateSaveButton();
+        });
+      });
+      els.list.querySelectorAll('.engaged-select').forEach((select) => {
+        select.addEventListener('change', () => {
+          const rowNumber = Number(select.dataset.row);
+          const lead = state.leads.find((item) => Number(item.rowNumber) === rowNumber);
+          if (!lead) return;
+          lead.engagedPerson = select.value;
+          state.dirty.add(rowNumber);
+          updateSaveButton();
+        });
+      });
+      els.list.querySelectorAll('.manual-linkedin[data-row]').forEach((link) => {
+        link.addEventListener('click', () => markConnectionSent(Number(link.dataset.row)));
+      });
+    }
+
+    function markConnectionSent(rowNumber) {
+      const lead = state.leads.find((item) => Number(item.rowNumber) === rowNumber);
+      if (!lead || classifyStatus(lead.outreachStatus) === 'connected') {
+        return;
+      }
+      lead.outreachStatus = 'Connection Sent';
+      lead.statusKey = 'connection_sent';
+      const card = els.list.querySelector(`.lead-card[data-row="${String(rowNumber).replace(/"/g, '\\"')}"]`);
+      const select = card ? card.querySelector('.status-select') : null;
+      if (select) {
+        select.value = 'Connection Sent';
+        select.className = 'status-select status-connection_sent';
+      }
+      state.dirty.add(rowNumber);
+      updateSaveButton();
+    }
+
+    function classifyStatus(status) {
+      const normalized = String(status || '').trim().toLowerCase();
+      if (!normalized) return 'new';
+      if (normalized === 'connection sent') return 'connection_sent';
+      if (normalized === 'connected') return 'connected';
+      return 'other';
+    }
+
+    function activityClass(value) {
+      if (value === 'Very active') return 'is-very-active';
+      if (value === 'Active') return 'is-active';
+      if (value === 'Not active') return 'is-not-active';
+      return '';
+    }
+
+    function collectDirty() {
+      return state.leads
+        .filter((lead) => state.dirty.has(Number(lead.rowNumber)))
+        .map((lead) => ({
+          rowNumber: Number(lead.rowNumber),
+          outreachStatus: lead.outreachStatus || '',
+          engagedPerson: lead.engagedPerson || '',
+        }));
+    }
+
+    function save() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setStatus('Use the deployed web app to save prospect updates.', true);
+        return;
+      }
+      const items = collectDirty();
+      if (!items.length) {
+        Shell.setStatus('No prospect changes to save', false);
+        return;
+      }
+      Shell.setBusy(true);
+      els.saveButton.classList.add('progressing');
+      els.saveButton.innerHTML = '<span class="spinner"></span><span>Save</span>';
+      Shell.setStatus(`Saving ${items.length} prospect update${items.length === 1 ? '' : 's'}`, false);
+      google.script.run
+        .withSuccessHandler((result) => {
+          Shell.setBusy(false);
+          els.saveButton.classList.remove('progressing');
+          els.saveButton.textContent = 'Save';
+          Shell.setStatus(`Saved ${result.processed || 0} prospect update${(result.processed || 0) === 1 ? '' : 's'}`, false);
+          state.dirty.clear();
+          updateSaveButton();
+          window.setTimeout(() => load(), 600);
+        })
+        .withFailureHandler((error) => {
+          Shell.setBusy(false);
+          els.saveButton.classList.remove('progressing');
+          els.saveButton.textContent = 'Save';
+          Shell.setStatus(error.message || String(error), true);
+        })
+        .updateManualRequests(items);
+    }
+
+    function updateSaveButton() {
+      if (!els || !els.saveButton) return;
+      const dirtyCount = state.dirty.size;
+      els.saveButton.textContent = dirtyCount > 0 ? `Save (${dirtyCount})` : 'Save';
+      els.saveButton.disabled = Shell.isBusy() || isGuarded() || dirtyCount === 0;
+    }
+
+    function updateControls() {
+      if (!els) return;
+      els.filterSelect.disabled = Shell.isBusy() || isGuarded();
+      updateSaveButton();
+    }
+
+    function isGuarded() {
+      return Boolean(state.pipelineGuard && state.pipelineGuard.blocked);
+    }
+
+    function updateGuardPosition() {
+      if (!isGuarded()) return;
+      const topbar = document.querySelector('.topbar');
+      const top = topbar ? Math.round(topbar.getBoundingClientRect().bottom) : 0;
+      document.documentElement.style.setProperty('--manual-guard-top', `${top}px`);
+    }
+
+    return { init, load, updateControls };
+  })();
+</script>

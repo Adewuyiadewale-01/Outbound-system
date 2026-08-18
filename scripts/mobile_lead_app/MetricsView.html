@@ -1,0 +1,370 @@
+<script>
+  const Metrics = (() => {
+    const state = {
+      entries: [],
+      weeklyEntries: [],
+      latest: {},
+      weeklyLatest: {},
+      totalRows: 0,
+      weeklyTotalRows: 0,
+      selectedDateKey: '',
+      selectedWeekKey: '',
+      period: 'daily',
+      dirty: new Map(),
+    };
+    let els = null;
+
+    const METRIC_CELLS = [
+      ['Conn Target', 'connTarget'],
+      ['Conn Sent', 'connSent'],
+      ['Accepted', 'accepted'],
+      ['Requests Withdrawn', 'requestsWithdrawn'],
+      ['First Msgs Sent', 'firstMsgsSent'],
+      ['Follow-Ups Sent', 'followUpsSent'],
+      ['Comments Posted', 'commentsPosted'],
+      ['Replies', 'replies'],
+      ['Reply Rate', 'replyRate'],
+      ['New Pipeline', 'newPipeline'],
+      ['Calls Booked', 'callsBooked'],
+      ['Audits Sent', 'auditsSent'],
+      ['Proposals Sent', 'proposalsSent'],
+      ['Total Conn Sent', 'totalConnSent'],
+      ['Total Accepted', 'totalAccepted'],
+      ['All-Time Acceptance Rate', 'acceptanceRate'],
+    ];
+    const EDITABLE_FIELDS = {
+      connTarget: true,
+      commentsPosted: true,
+      replies: true,
+    };
+    const WEEKLY_METRIC_CELLS = [
+      ['Week #', 'weekNumber'],
+      ['Week Starting', 'weekStarting'],
+      ['Week Ending', 'weekEnding'],
+      ['Conn Sent', 'connSent'],
+      ['Conn Target', 'connTarget'],
+      ['Conn Variance', 'connVariance'],
+      ['Accepted', 'accepted'],
+      ['Acceptance Rate', 'acceptanceRate'],
+      ['First Msgs Sent', 'firstMsgsSent'],
+      ['Follow-Ups Sent', 'followUpsSent'],
+      ['Replies', 'replies'],
+      ['Reply Rate', 'replyRate'],
+      ['Comments Posted', 'commentsPosted'],
+      ['Requests Withdrawn', 'requestsWithdrawn'],
+      ['New Pipeline', 'newPipeline'],
+      ['Calls Booked', 'callsBooked'],
+      ['Audits Sent', 'auditsSent'],
+      ['Proposals Sent', 'proposalsSent'],
+    ];
+
+    function init() {
+      els = {
+        list: document.getElementById('metricsList'),
+        refreshButton: document.getElementById('metricsRefreshButton'),
+        saveButton: document.getElementById('metricsSaveButton'),
+        dateSelect: document.getElementById('metricsDateSelect'),
+        periodSelect: document.getElementById('metricsPeriodSelect'),
+        acceptanceRateValue: document.getElementById('metricsAcceptanceRateValue'),
+        totalConnSentValue: document.getElementById('metricsTotalConnSentValue'),
+        replyRateValue: document.getElementById('metricsReplyRateValue'),
+      };
+      els.refreshButton.addEventListener('click', rebuild);
+      els.saveButton.addEventListener('click', save);
+      els.periodSelect.addEventListener('change', () => {
+        state.period = els.periodSelect.value || 'daily';
+        state.dirty.clear();
+        updateDateSelect();
+        Shell.setStatus('', false);
+        updateStats();
+        render();
+        updateSaveButton();
+      });
+      els.dateSelect.addEventListener('change', () => {
+        if (state.period === 'weekly') {
+          state.selectedWeekKey = els.dateSelect.value;
+        } else {
+          state.selectedDateKey = els.dateSelect.value;
+        }
+        updateStats();
+        render();
+      });
+      window.addEventListener('resize', updateAvailableHeight);
+    }
+
+    function load() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setLoading(false);
+        Shell.setSubtitle('Metrics');
+        Shell.setStatus('Local preview only. Use the deployed web app to load Metrics.', false);
+        els.list.innerHTML = '<div class="empty">Open the deployed Apps Script web app to load Metrics.</div>';
+        updateAvailableHeight();
+        return;
+      }
+      Shell.setLoading(true);
+      Shell.setSubtitle('Metrics');
+      Shell.setStatus('Loading metrics', false);
+      els.list.innerHTML = '<div class="empty">Loading Metrics...</div>';
+      google.script.run
+        .withSuccessHandler((payload) => {
+          applyPayload(payload);
+          state.dirty.clear();
+          updateSaveButton();
+          Shell.setLoading(false);
+          Shell.setStatus('', false);
+        })
+        .withFailureHandler((error) => {
+          Shell.setLoading(false);
+          Shell.setStatus(error.message || String(error), true);
+          els.list.innerHTML = '<div class="empty">Could not load Metrics.</div>';
+        })
+        .getMetricsPayload({ limit: 14, weeklyLimit: 12 });
+    }
+
+    function rebuild() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setStatus('Use the deployed web app to rebuild Metrics.', true);
+        return;
+      }
+      Shell.setBusy(true);
+      els.refreshButton.classList.add('progressing');
+      els.refreshButton.innerHTML = '<span class="spinner"></span><span>Refresh</span>';
+      Shell.setStatus('Rebuilding Metrics', false);
+      google.script.run
+        .withSuccessHandler((payload) => {
+          Shell.setBusy(false);
+          els.refreshButton.classList.remove('progressing');
+          els.refreshButton.textContent = 'Refresh';
+          applyPayload(payload);
+          state.dirty.clear();
+          updateSaveButton();
+          const rebuilt = payload && payload.rebuild;
+          const dateCount = rebuilt ? rebuilt.datesUpdated || 0 : 0;
+          Shell.setStatus(`Metrics refreshed for ${dateCount} date${dateCount === 1 ? '' : 's'}`, false);
+        })
+        .withFailureHandler((error) => {
+          Shell.setBusy(false);
+          els.refreshButton.classList.remove('progressing');
+          els.refreshButton.textContent = 'Refresh';
+          Shell.setStatus(error.message || String(error), true);
+        })
+        .rebuildDailyMetricsReport();
+    }
+
+    function applyPayload(payload) {
+      state.entries = (payload && payload.entries) || [];
+      state.weeklyEntries = (payload && payload.weeklyEntries) || [];
+      state.latest = (payload && payload.latest) || {};
+      state.weeklyLatest = (payload && payload.weeklyLatest) || {};
+      state.totalRows = (payload && payload.totalRows) || state.entries.length;
+      state.weeklyTotalRows = (payload && payload.weeklyTotalRows) || state.weeklyEntries.length;
+      if (!findSelectedDailyEntry()) {
+        state.selectedDateKey = state.entries.length ? entryKey(state.entries[0]) : '';
+      }
+      if (!findSelectedWeeklyEntry()) {
+        state.selectedWeekKey = state.weeklyEntries.length ? entryKey(state.weeklyEntries[0]) : '';
+      }
+      updateDateSelect();
+      updateStats();
+      render();
+    }
+
+    function updateStats() {
+      if (state.period === 'weekly') {
+        const entry = findSelectedWeeklyEntry() || state.weeklyLatest || {};
+        els.acceptanceRateValue.textContent = entry.acceptanceRate || '0.0%';
+        els.totalConnSentValue.textContent = entry.connSent || 0;
+        els.replyRateValue.textContent = entry.replyRate || '0.0%';
+        return;
+      }
+      const entry = findSelectedDailyEntry() || state.latest || {};
+      els.acceptanceRateValue.textContent = entry.acceptanceRate || '0.0%';
+      els.totalConnSentValue.textContent = entry.totalConnSent || 0;
+      els.replyRateValue.textContent = entry.replyRate || '0.0%';
+    }
+
+    function render() {
+      if (state.period === 'weekly') {
+        if (!state.weeklyEntries.length) {
+          els.list.innerHTML = '<div class="empty">No Weekly Metrics rows yet.</div>';
+          updateAvailableHeight();
+          return;
+        }
+        const entry = findSelectedWeeklyEntry() || state.weeklyEntries[0];
+        els.list.innerHTML = renderMetricGrid(entry, WEEKLY_METRIC_CELLS, 'weekly');
+        updateControls();
+        updateAvailableHeight();
+        return;
+      }
+      if (!state.entries.length) {
+        els.list.innerHTML = '<div class="empty">No Daily Metrics rows yet.</div>';
+        return;
+      }
+      const entry = findSelectedDailyEntry() || state.entries[0];
+      els.list.innerHTML = renderMetricGrid(entry, METRIC_CELLS, 'daily');
+      bindControls();
+      updateAvailableHeight();
+    }
+
+    function renderMetricGrid(entry, cells, period) {
+      const gridClass = period === 'weekly' ? ' metrics-weekly-grid' : '';
+      const label = period === 'weekly'
+        ? `Weekly metrics for ${entry.weekStarting || 'selected week'}`
+        : `Daily metrics for ${entry.date || 'selected date'}`;
+      return `
+        <article class="metrics-table-card" aria-label="${Shell.escapeHtml(label)}">
+          <div class="metrics-table-grid${gridClass}">
+            ${cells.map(([cellLabel, key]) => renderMetricCell(cellLabel, key, entry, period)).join('')}
+          </div>
+        </article>
+      `;
+    }
+
+    function renderMetricCell(label, key, entry, period) {
+      const value = entry[key] || '';
+      if (period === 'daily' && EDITABLE_FIELDS[key]) {
+        const inputValue = String(value || '').replace(/,/g, '').replace(/%$/, '');
+        return `
+          <div class="metrics-table-cell">
+            <div class="metrics-table-head">${Shell.escapeHtml(label)}</div>
+            <div class="metrics-table-value">
+              <input
+                class="metrics-table-input"
+                type="number"
+                inputmode="numeric"
+                min="0"
+                step="1"
+                value="${Shell.escapeAttr(inputValue)}"
+                data-row="${Shell.escapeAttr(entry.rowNumber)}"
+                data-field="${Shell.escapeAttr(key)}"
+                aria-label="${Shell.escapeAttr(label)}">
+            </div>
+          </div>
+        `;
+      }
+      return `
+        <div class="metrics-table-cell">
+          <div class="metrics-table-head">${Shell.escapeHtml(label)}</div>
+          <div class="metrics-table-value">${Shell.escapeHtml(value || '0')}</div>
+        </div>
+      `;
+    }
+
+    function bindControls() {
+      els.list.querySelectorAll('[data-field]').forEach((control) => {
+        control.addEventListener('input', () => {
+          const rowNumber = Number(control.dataset.row);
+          const field = control.dataset.field;
+          if (!rowNumber || !EDITABLE_FIELDS[field]) return;
+          const entry = state.entries.find((item) => Number(item.rowNumber) === rowNumber);
+          if (!entry) return;
+          entry[field] = control.value;
+          markDirty(rowNumber, field, control.value);
+          updateSaveButton();
+        });
+      });
+      updateControls();
+    }
+
+    function markDirty(rowNumber, field, value) {
+      const patch = state.dirty.get(rowNumber) || { rowNumber };
+      patch[field] = value;
+      state.dirty.set(rowNumber, patch);
+    }
+
+    function collectDirty() {
+      return Array.from(state.dirty.values());
+    }
+
+    function save() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setStatus('Use the deployed web app to save Metrics updates.', true);
+        return;
+      }
+      const items = collectDirty();
+      if (!items.length) {
+        Shell.setStatus('No Metrics changes to save', false);
+        return;
+      }
+      Shell.setBusy(true);
+      els.saveButton.classList.add('progressing');
+      els.saveButton.innerHTML = '<span class="spinner"></span><span>Save</span>';
+      Shell.setStatus(`Saving ${items.length} Metrics update${items.length === 1 ? '' : 's'}`, false);
+      google.script.run
+        .withSuccessHandler((result) => {
+          Shell.setBusy(false);
+          els.saveButton.classList.remove('progressing');
+          els.saveButton.textContent = 'Save';
+          Shell.setStatus(`Saved ${result.processed || 0} Metrics update${(result.processed || 0) === 1 ? '' : 's'}`, false);
+          state.dirty.clear();
+          updateSaveButton();
+          window.setTimeout(() => load(), 600);
+        })
+        .withFailureHandler((error) => {
+          Shell.setBusy(false);
+          els.saveButton.classList.remove('progressing');
+          els.saveButton.textContent = 'Save';
+          Shell.setStatus(error.message || String(error), true);
+          updateSaveButton();
+        })
+        .updateDailyMetricsManual(items);
+    }
+
+    function updateDateSelect() {
+      const entries = state.period === 'weekly' ? state.weeklyEntries : state.entries;
+      els.dateSelect.innerHTML = entries.map(renderDateOption).join('');
+      els.dateSelect.value = state.period === 'weekly' ? state.selectedWeekKey : state.selectedDateKey;
+    }
+
+    function renderDateOption(entry) {
+      const key = entryKey(entry);
+      const selectedKey = state.period === 'weekly' ? state.selectedWeekKey : state.selectedDateKey;
+      const selected = key === selectedKey ? ' selected' : '';
+      const label = state.period === 'weekly'
+        ? `Week ${entry.weekNumber || ''}: ${entry.weekStarting || ''} - ${entry.weekEnding || ''}`
+        : entry.date || 'Undated';
+      return `<option value="${Shell.escapeHtml(key)}"${selected}>${Shell.escapeHtml(label)}</option>`;
+    }
+
+    function findSelectedDailyEntry() {
+      if (!state.selectedDateKey) return null;
+      return state.entries.find((entry) => entryKey(entry) === state.selectedDateKey) || null;
+    }
+
+    function findSelectedWeeklyEntry() {
+      if (!state.selectedWeekKey) return null;
+      return state.weeklyEntries.find((entry) => entryKey(entry) === state.selectedWeekKey) || null;
+    }
+
+    function entryKey(entry) {
+      return String((entry && (entry.dateKey || entry.date)) || '');
+    }
+
+    function updateControls() {
+      if (!els) return;
+      const entries = state.period === 'weekly' ? state.weeklyEntries : state.entries;
+      els.refreshButton.disabled = Shell.isBusy();
+      els.periodSelect.disabled = Shell.isBusy();
+      els.dateSelect.disabled = Shell.isBusy() || !entries.length;
+      els.list.querySelectorAll('[data-field]').forEach((control) => {
+        control.disabled = Shell.isBusy();
+      });
+      updateSaveButton();
+    }
+
+    function updateSaveButton() {
+      if (!els || !els.saveButton) return;
+      const dirtyCount = state.dirty.size;
+      els.saveButton.textContent = dirtyCount > 0 ? `Save (${dirtyCount})` : 'Save';
+      els.saveButton.disabled = Shell.isBusy() || dirtyCount === 0;
+    }
+
+    function updateAvailableHeight() {
+      if (!els || !els.list || els.list.classList.contains('is-hidden')) return;
+      const top = Math.max(0, Math.round(els.list.getBoundingClientRect().top));
+      document.documentElement.style.setProperty('--metrics-list-top', `${top}px`);
+    }
+
+    return { init, load, updateControls };
+  })();
+</script>

@@ -1,0 +1,13 @@
+Based on the research above, extract the strongest message angle for the first LinkedIn DM.
+
+Use the message template structure I gave earlier. Do not write the full final message unless necessary. Focus on identifying the strongest replacement angle for the opening and the most useful direction for the personal note.
+
+Give me:
+1. Strongest message angle
+2. Why this is the strongest angle
+3. Recommended opening strategy: Pattern-Interrupt Narrative Hook or Warm Anchor + Analytical Proof Hook
+4. Safe-to-use claims
+5. Audit-only claims
+6. Claims to avoid or verify
+7. Best possible replacement opening
+8. Best personal note angle

@@ -1,0 +1,352 @@
+<script>
+  const OutreachLog = (() => {
+    const state = {
+      entries: [],
+      counts: { all: 0, conn_request: 0, connected: 0, withdrawn: 0, overdue: 0 },
+      filter: 'active',
+      search: '',
+      searchOpen: false,
+      dirty: new Set(),
+      progressOptions: [],
+      outcomeOptions: [],
+    };
+    let els = null;
+
+    function init() {
+      els = {
+        list: document.getElementById('outreachLogList'),
+        filterSelect: document.getElementById('outreachLogFilter'),
+        saveButton: document.getElementById('outreachLogSaveButton'),
+        searchDock: document.getElementById('outreachLogSearchDock'),
+        searchButton: document.getElementById('outreachLogSearchButton'),
+        searchInput: document.getElementById('outreachLogSearchInput'),
+        searchClear: document.getElementById('outreachLogSearchClear'),
+        totalCount: document.getElementById('outreachLogTotalCount'),
+        connCount: document.getElementById('outreachLogConnCount'),
+        overdueCount: document.getElementById('outreachLogOverdueCount'),
+        connectedCount: document.getElementById('outreachLogConnectedCount'),
+      };
+      els.filterSelect.addEventListener('change', () => {
+        state.filter = els.filterSelect.value;
+        load();
+      });
+      els.saveButton.addEventListener('click', save);
+      els.searchButton.addEventListener('click', toggleSearch);
+      els.searchClear.addEventListener('click', clearSearch);
+      els.searchInput.addEventListener('input', syncSearchDock);
+      els.searchInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          runSearchNow(true);
+        } else if (event.key === 'Escape') {
+          collapseSearch();
+        }
+      });
+    }
+
+    function load() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setLoading(false);
+        Shell.setStatus('Local preview only. Use the deployed web app to load Outreach Log.', false);
+        els.list.innerHTML = '<div class="empty">Open the deployed Apps Script web app to load Outreach Log.</div>';
+        return;
+      }
+      Shell.setLoading(true);
+      Shell.setStatus('Loading', false);
+      els.list.innerHTML = '<div class="empty">Loading Outreach Log...</div>';
+      google.script.run
+        .withSuccessHandler((payload) => {
+          state.entries = payload.entries || [];
+          state.counts = payload.counts || state.counts;
+          state.filter = payload.filter || state.filter;
+          state.progressOptions = payload.progressOptions || [];
+          state.outcomeOptions = payload.outcomeOptions || [];
+          state.dirty.clear();
+          els.filterSelect.value = state.filter;
+          els.searchInput.value = state.search;
+          syncSearchDock();
+          Shell.setSubtitle(payload.outreachLogTabName || 'Outreach Log');
+          updateStats();
+          updateSaveButton();
+          Shell.setLoading(false);
+          Shell.setStatus('', false);
+          render();
+        })
+        .withFailureHandler((error) => {
+          Shell.setLoading(false);
+          Shell.setStatus(error.message || String(error), true);
+          els.list.innerHTML = '<div class="empty">Could not load Outreach Log.</div>';
+        })
+        .getOutreachLogPayload({ filter: state.filter });
+    }
+
+    function updateStats() {
+      els.totalCount.textContent = state.counts.all || 0;
+      els.connCount.textContent = state.counts.conn_request || 0;
+      els.overdueCount.textContent = state.counts.overdue || 0;
+      els.connectedCount.textContent = state.counts.connected || 0;
+    }
+
+    function render() {
+      const entries = visibleEntries();
+      if (!entries.length) {
+        const emptyLabel = state.search
+          ? `No Outreach Log rows match "${Shell.escapeHtml(state.search)}".`
+          : 'No Outreach Log rows match this filter.';
+        els.list.innerHTML = `<div class="empty">${emptyLabel}</div>`;
+        return;
+      }
+      els.list.innerHTML = entries.map(renderEntry).join('');
+      bindControls();
+    }
+
+    function visibleEntries() {
+      const query = state.search.trim().toLowerCase();
+      if (!query) return state.entries;
+      return state.entries.filter((entry) => personNameMatches(entry, query));
+    }
+
+    function personNameMatches(entry, query) {
+      const haystack = [
+        entry.contactName,
+        entry.p1Name,
+        entry.p2Name,
+      ].join(' ').toLowerCase();
+      return haystack.indexOf(query) !== -1;
+    }
+
+    function renderEntry(entry) {
+      return `
+        <article class="lead-card" data-row="${Shell.escapeAttr(entry.rowNumber)}">
+          <div class="firm-row">
+            <div class="firm-link"><span>${Shell.escapeHtml(entry.company || entry.prospectId || 'Unnamed prospect')}</span></div>
+            <div class="lead-id">ID:${Shell.escapeHtml(Shell.shortLeadId(entry.prospectId))}</div>
+          </div>
+          ${renderCountdown(entry)}
+          <div class="prospect-controls">
+            <div class="field-shell">
+              <div class="field-label">Progress:</div>
+              ${renderProgressSelect(entry)}
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Outcome:</div>
+              ${renderOutcomeSelect(entry)}
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Linkedin:</div>
+              ${renderLinkedIn(entry)}
+            </div>
+            <div class="field-shell">
+              <div class="field-label">Person:</div>
+              <div class="readonly-field">${Shell.escapeHtml(entry.personEngaged || '')}</div>
+            </div>
+          </div>
+          <div class="log-body">
+            <div class="log-detail"><span class="log-detail-label">Contact:</span> ${Shell.escapeHtml(entry.contactName || '')}</div>
+            ${renderPeopleNames(entry)}
+          </div>
+        </article>
+      `;
+    }
+
+    function renderPeopleNames(entry) {
+      const names = [entry.p1Name, entry.p2Name].filter(Boolean);
+      if (!names.length) return '';
+      return `<div class="log-detail"><span class="log-detail-label">People:</span> ${Shell.escapeHtml(names.join(' / '))}</div>`;
+    }
+
+    function renderCountdown(entry) {
+      const tone = entry.countdownTone || 'blank';
+      if (tone === 'blank' && !entry.sentAt && !entry.daysLeft) return '';
+      const toneClass = tone === 'red' ? 'countdown-red' : tone === 'amber' ? 'countdown-amber' : tone === 'neutral' ? 'countdown-neutral' : 'countdown-green';
+      const label = entry.daysLeft || (entry.daysLeftValue !== '' ? `${entry.daysLeftValue} days left` : 'No countdown');
+      const sentLabel = entry.sentAt ? `Sent ${entry.sentAt}` : 'No sent date';
+      return `
+        <div class="countdown-row">
+          <span class="countdown-badge ${toneClass}">${Shell.escapeHtml(label)}</span>
+          <span class="countdown-sent">${Shell.escapeHtml(sentLabel)}</span>
+        </div>
+      `;
+    }
+
+    function renderProgressSelect(entry) {
+      const current = entry.currentProgress || '';
+      const options = augmentOptions(toOptions(state.progressOptions), current).map((option) => {
+        const selected = option.value === current ? 'selected' : '';
+        return `<option value="${Shell.escapeAttr(option.value)}" ${selected}>${Shell.escapeHtml(option.label)}</option>`;
+      }).join('');
+      return `<select class="progress-select progress-${Shell.escapeAttr(entry.progressKey || classifyProgress(current))}" data-row="${Shell.escapeAttr(entry.rowNumber)}" data-field="currentProgress">${options}</select>`;
+    }
+
+    function renderLinkedIn(entry) {
+      if (!entry.contactLinkedIn) {
+        return '<div class="readonly-field">Nil</div>';
+      }
+      return `<a class="linkedin-field" href="${Shell.escapeAttr(entry.contactLinkedIn)}" target="_blank" rel="noopener">${Shell.escapeHtml(entry.contactLinkedIn)}</a>`;
+    }
+
+    function renderOutcomeSelect(entry) {
+      const current = entry.outcome || '';
+      const options = augmentOptions(toOptions(state.outcomeOptions), current).map((option) => {
+        const selected = option.value === current ? 'selected' : '';
+        return `<option value="${Shell.escapeAttr(option.value)}" ${selected}>${Shell.escapeHtml(option.label)}</option>`;
+      }).join('');
+      return `<select class="outcome-select" data-row="${Shell.escapeAttr(entry.rowNumber)}" data-field="outcome">${options}</select>`;
+    }
+
+    function toOptions(values) {
+      const options = (values || []).map((value) => ({
+        value,
+        label: value,
+      }));
+      return [{ value: '', label: 'Blank' }].concat(options);
+    }
+
+    function augmentOptions(baseOptions, currentValue) {
+      const exists = baseOptions.some((opt) => opt.value === currentValue);
+      if (exists) return baseOptions;
+      return baseOptions.concat([{ value: currentValue, label: currentValue || 'Blank' }]);
+    }
+
+    function bindControls() {
+      els.list.querySelectorAll('select[data-field]').forEach((select) => {
+        select.addEventListener('change', () => {
+          const rowNumber = Number(select.dataset.row);
+          const field = select.dataset.field;
+          const entry = state.entries.find((item) => Number(item.rowNumber) === rowNumber);
+          if (!entry || !field) return;
+          entry[field] = select.value;
+          if (field === 'currentProgress') {
+            entry.progressKey = classifyProgress(select.value);
+            select.className = `progress-select progress-${entry.progressKey}`;
+          }
+          state.dirty.add(rowNumber);
+          updateSaveButton();
+        });
+      });
+    }
+
+    function classifyProgress(progress) {
+      const normalized = String(progress || '').trim().toLowerCase();
+      if (!normalized) return 'blank';
+      if (normalized === 'conn request' || normalized === 'connection request') return 'conn_request';
+      if (normalized === 'connected') return 'connected';
+      if (normalized === 'withdrawn' || normalized === 'request withdrawn') return 'withdrawn';
+      if (normalized === 'first message') return 'first_message';
+      if (/^fu-\d+$/.test(normalized)) return 'follow_up';
+      if (normalized === 'follow up' || normalized === 'follow-up') return 'follow_up';
+      if (normalized === 'not interested') return 'not_interested';
+      return 'other';
+    }
+
+    function collectDirty() {
+      return state.entries
+        .filter((entry) => state.dirty.has(Number(entry.rowNumber)))
+        .map((entry) => ({
+          rowNumber: Number(entry.rowNumber),
+          currentProgress: entry.currentProgress || '',
+          outcome: entry.outcome || '',
+        }));
+    }
+
+    function save() {
+      if (!Shell.canUseAppsScript()) {
+        Shell.setStatus('Use the deployed web app to save Outreach Log updates.', true);
+        return;
+      }
+      const items = collectDirty();
+      if (!items.length) {
+        Shell.setStatus('No Outreach Log changes to save', false);
+        return;
+      }
+      Shell.setBusy(true);
+      els.saveButton.classList.add('progressing');
+      els.saveButton.innerHTML = '<span class="spinner"></span><span>Save</span>';
+      Shell.setStatus(`Saving ${items.length} Outreach Log update${items.length === 1 ? '' : 's'}`, false);
+      google.script.run
+        .withSuccessHandler((result) => {
+          Shell.setBusy(false);
+          els.saveButton.classList.remove('progressing');
+          els.saveButton.textContent = 'Save';
+          Shell.setStatus(`Saved ${result.processed || 0} Outreach Log update${(result.processed || 0) === 1 ? '' : 's'}`, false);
+          state.dirty.clear();
+          updateSaveButton();
+          window.setTimeout(() => load(), 600);
+        })
+        .withFailureHandler((error) => {
+          Shell.setBusy(false);
+          els.saveButton.classList.remove('progressing');
+          els.saveButton.textContent = 'Save';
+          Shell.setStatus(error.message || String(error), true);
+        })
+        .updateOutreachLog(items);
+    }
+
+    function updateSaveButton() {
+      if (!els || !els.saveButton) return;
+      const dirtyCount = state.dirty.size;
+      els.saveButton.textContent = dirtyCount > 0 ? `Save (${dirtyCount})` : 'Save';
+      els.saveButton.disabled = Shell.isBusy() || dirtyCount === 0;
+    }
+
+    function toggleSearch() {
+      if (!state.searchOpen) {
+        expandSearch();
+        return;
+      }
+      if (els.searchInput.value.trim()) {
+        runSearchNow(true);
+        return;
+      }
+      collapseSearch();
+    }
+
+    function expandSearch() {
+      state.searchOpen = true;
+      syncSearchDock();
+      window.setTimeout(() => els.searchInput.focus(), 40);
+    }
+
+    function collapseSearch() {
+      state.searchOpen = false;
+      syncSearchDock();
+      els.searchInput.blur();
+    }
+
+    function clearSearch() {
+      els.searchInput.value = '';
+      state.search = '';
+      syncSearchDock();
+      render();
+      expandSearch();
+    }
+
+    function runSearchNow(shouldCollapse) {
+      const nextSearch = els.searchInput.value.trim();
+      if (nextSearch === state.search && !shouldCollapse) return;
+      state.search = nextSearch;
+      render();
+      if (shouldCollapse) {
+        collapseSearch();
+      }
+    }
+
+    function syncSearchDock() {
+      if (!els || !els.searchDock) return;
+      const hasQuery = Boolean(els.searchInput.value.trim() || state.search);
+      els.searchDock.classList.toggle('is-open', state.searchOpen);
+      els.searchDock.classList.toggle('has-query', hasQuery);
+    }
+
+    function updateControls() {
+      if (!els) return;
+      els.filterSelect.disabled = Shell.isBusy();
+      els.searchInput.disabled = Shell.isBusy();
+      els.searchButton.disabled = Shell.isBusy();
+      els.searchClear.disabled = Shell.isBusy();
+      updateSaveButton();
+    }
+
+    return { init, load, updateControls };
+  })();
+</script>
