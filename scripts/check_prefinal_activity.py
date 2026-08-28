@@ -37,7 +37,10 @@ from linkedin_outreach_session import (  # noqa: E402
     sheet_date,
 )
 from sheets_helper import get_client, normalize_rows, open_sheet, require_columns  # noqa: E402
+from runtime_environment import load_repo_env  # noqa: E402
 from prefinal_queue import QUEUE_ROW_COLUMNS, enqueue_batch, load_batch, next_activity_batch, update_batch_status  # noqa: E402
+
+load_repo_env()
 
 
 DEFAULT_LEADS_SHEET_URL = os.environ.get("LEAD_RESEARCH_SHEET_URL", "")

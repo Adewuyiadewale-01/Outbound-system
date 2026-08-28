@@ -36,6 +36,7 @@ if str(HELPERS) not in sys.path:
     sys.path.insert(0, str(HELPERS))
 
 from sheets_helper import format_sheet_date, get_client, get_worksheet, normalize_rows, open_sheet, sheet_values_equal  # noqa: E402
+from runtime_environment import load_repo_env  # noqa: E402
 from prefinal_queue import enqueue_batch, record_prefinal_publish, rows_fingerprint  # noqa: E402
 from lead_research_archive import (  # noqa: E402
     MATCH_AVAILABLE,
@@ -46,6 +47,8 @@ from lead_research_archive import (  # noqa: E402
     has_reusable_research,
     hydrate_computation_lead,
 )
+
+load_repo_env()
 
 
 REPO_CREDS = ROOT / "credentials" / "google-sheets.json"

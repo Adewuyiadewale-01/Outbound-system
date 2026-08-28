@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from gspread.exceptions import WorksheetNotFound
+from runtime_environment import load_repo_env
+
+load_repo_env()
 
 HELPERS_DIR = Path(__file__).resolve().parent
 ROOT_DIR = HELPERS_DIR.parent

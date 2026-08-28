@@ -32,6 +32,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 from sheets_helper import (
     append_row, get_client, open_sheet, get_worksheet, read_tab, normalize_rows, update_row,
 )
+from runtime_environment import load_repo_env
+
+load_repo_env()
 
 # ---------------------------------------------------------------------------
 # Constants

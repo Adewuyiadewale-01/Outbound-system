@@ -2,6 +2,12 @@
 set -euo pipefail
 
 WORKFLOW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPOSITORY_DIR="$(cd "$WORKFLOW_DIR/../../.." && pwd)"
+if [[ -f "$REPOSITORY_DIR/.env" ]]; then
+  set -a
+  source "$REPOSITORY_DIR/.env"
+  set +a
+fi
 cd "$WORKFLOW_DIR"
 
 SHEET_URL="${SHEET_URL:-}"

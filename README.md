@@ -7,7 +7,7 @@ This repository contains a local-first automation toolkit for moving qualified l
 1. Create and activate a Python 3.10+ virtual environment.
 2. Install runtime dependencies: `python3 -m pip install -r requirements.txt`.
 3. Install the root JavaScript dependencies: `npm ci`.
-4. Copy `.env.example` to `.env`, then set the required sheet URLs and local credential path in your shell or environment manager.
+4. Copy `.env.example` to `.env`, then set the required sheet URLs and local credential path. Core Python workflows load the root `.env` automatically; explicit process environment values take precedence.
 5. Keep service-account JSON, browser profiles, generated state, lead exports, and workflow outputs outside version control. The root `.gitignore` protects these paths for a new repository.
 
 ## Verification

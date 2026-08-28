@@ -24,6 +24,14 @@ from typing import Any, Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
+HELPERS_DIR = ROOT / "helpers"
+if str(HELPERS_DIR) not in sys.path:
+    sys.path.insert(0, str(HELPERS_DIR))
+
+from runtime_environment import load_repo_env
+
+load_repo_env()
+
 STATE_DIR = ROOT / "state"
 WATCHER_STATE_PATH = STATE_DIR / "orchestration_watcher.json"
 WATCHER_LOCK_PATH = STATE_DIR / "orchestration_watcher.lock"

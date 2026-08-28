@@ -18,6 +18,9 @@ for path in (HELPERS, SCRIPTS):
 
 from prefinal_queue import load_batch, save_batch  # noqa: E402
 from sheets_helper import get_client, normalize_rows, open_sheet  # noqa: E402
+from runtime_environment import load_repo_env  # noqa: E402
+
+load_repo_env()
 
 LEADS_SHEET_URL = os.environ.get("LEAD_RESEARCH_SHEET_URL", "")
 REPO_CREDS = ROOT / "credentials" / "google-sheets.json"

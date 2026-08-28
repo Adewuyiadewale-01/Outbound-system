@@ -9,6 +9,15 @@ from typing import Any, Dict, List
 import gspread
 from google.oauth2.service_account import Credentials
 
+ROOT = Path(__file__).resolve().parents[4]
+HELPERS = ROOT / "helpers"
+if str(HELPERS) not in sys.path:
+    sys.path.insert(0, str(HELPERS))
+
+from runtime_environment import load_repo_env
+
+load_repo_env()
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.readonly",

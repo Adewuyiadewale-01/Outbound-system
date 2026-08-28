@@ -28,6 +28,10 @@ HELPERS_DIR = PROJECT_DIR / "helpers"
 sys.path.insert(0, str(SCRIPTS_DIR))
 sys.path.insert(0, str(HELPERS_DIR))
 
+from runtime_environment import load_repo_env
+
+load_repo_env()
+
 LEAD_PREP_CONFIG_PATH = STATE_DIR / "lead_prep_orchestration_config.json"
 LEAD_PREP_ARCHIVE_PATH = STATE_DIR / "lead_exec_research" / "research_archive" / "index.json"
 LEAD_PREP_RUNS_DIR = STATE_DIR / "lead_exec_research" / "runs"

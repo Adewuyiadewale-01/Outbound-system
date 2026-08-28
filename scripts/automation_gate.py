@@ -18,6 +18,9 @@ if str(HELPERS) not in sys.path:
     sys.path.insert(0, str(HELPERS))
 
 from sheets_helper import get_client, get_worksheet, normalize_rows, open_sheet  # noqa: E402
+from runtime_environment import load_repo_env  # noqa: E402
+
+load_repo_env()
 
 DEFAULT_SHEET_URL = os.environ.get("LEAD_RESEARCH_SHEET_URL", "")
 DEFAULT_REVIEW_TAB = "Lead Review"

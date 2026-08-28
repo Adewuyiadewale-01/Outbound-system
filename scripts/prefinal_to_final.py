@@ -22,6 +22,9 @@ if str(HELPERS) not in sys.path:
 from linkedin_helper import LinkedInSession, relative_days_from_time_text  # noqa: E402
 from linkedin_outreach_session import _run_diversion, sequence_date_key  # noqa: E402
 from sheets_helper import get_client, normalize_rows, open_sheet, require_columns  # noqa: E402
+from runtime_environment import load_repo_env  # noqa: E402
+
+load_repo_env()
 
 
 REPO_CREDS = ROOT / "credentials" / "google-sheets.json"
