@@ -10,6 +10,16 @@ This repository contains a local-first automation toolkit for moving qualified l
 4. Copy `.env.example` to `.env`, then set the required sheet URLs and local credential path. Core Python workflows load the root `.env` automatically; explicit process environment values take precedence.
 5. Keep service-account JSON, browser profiles, generated state, lead exports, and workflow outputs outside version control. The root `.gitignore` protects these paths for a new repository.
 
+## Daily Job Discovery dashboard
+
+The Operations Control Center includes a **Job Discovery** page for the companion daily-job-discovery service. It reads the service's local SQLite-backed status, recent run record, scheduler state, and runtime controls; it can start manual discovery and re-verification runs, enable/disable daily execution, and start or stop its local scheduler. By default it locates the service at `~/Documents/Automation Journey/daily-job-discovery`; set `DAILY_JOB_DISCOVERY_ROOT` in `.env` to use a different directory.
+
+## Post Engagement workflow
+
+The **Post Engagement** dashboard page accepts one or more recent LinkedIn source-post URLs, extracts the accessible reactor pool, audits recent profile activity, and maintains a resumable daily campaign under `state/post_engagement/`. **Run audit** is read-only; **Launch workflow** is the explicit live-action path for Likes, follows, and connection requests. The selected Design or Automation CDP browser must already be running and signed in. The workflow always creates its own tab and does not replace an OBF tab.
+
+The command-line equivalent is `python3 scripts/post_engagement.py status`. Add a source with `add-source URL`; run an audit with `run`; add `--execute` only for a live campaign.
+
 ## Verification
 
 Run the Python suite with:

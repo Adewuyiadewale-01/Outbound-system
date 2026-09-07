@@ -26,6 +26,27 @@ def review_row(index, lane, *, approved=False, use=""):
 
 
 class ReviewRoutingTests(unittest.TestCase):
+    def test_disabled_approval_routes_two_balanced_thirty_lead_batches(self):
+        rows = [review_row(index, "Design") for index in range(30)]
+        rows += [review_row(100 + index, "Automation") for index in range(30)]
+
+        first_batch = classify_review_rows(
+            rows[::2], checkpoint="first", approval_required=False
+        )
+        second_batch = classify_review_rows(
+            rows[1::2], checkpoint="first", approval_required=False
+        )
+
+        self.assertEqual(first_batch["action"], "process_all_lanes")
+        self.assertEqual(len(first_batch["prefinal"]), 30)
+        self.assertEqual(len(second_batch["prefinal"]), 30)
+        self.assertEqual(
+            sum(row["Primary Lane"] == "Design" for row in first_batch["prefinal"]), 15
+        )
+        self.assertEqual(
+            sum(row["Primary Lane"] == "Automation" for row in first_batch["prefinal"]), 15
+        )
+
     def test_first_checkpoint_skips_entire_group_below_design_threshold(self):
         rows = [review_row(i, "Design", approved=i < 19) for i in range(25)]
         rows += [review_row(100 + i, "Automation") for i in range(25)]

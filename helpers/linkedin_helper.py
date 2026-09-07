@@ -322,6 +322,30 @@ class CDPConnection:
             "new_target_url": new_target.get("url", url),
         }
 
+    def create_page_target(self, url: str = "about:blank") -> Dict[str, Any]:
+        """Create and attach to a new tab without closing any existing tab.
+
+        Workflows that share a CDP browser must not reuse or replace another
+        workflow's active page.  The returned target id can also be persisted
+        by the caller for diagnostics.
+        """
+        encoded_url = quote(str(url or "about:blank"), safe="")
+        target = self._http_request(f"/json/new?{encoded_url}", method="PUT")
+        target_id = target.get("id")
+        ws_url = target.get("webSocketDebuggerUrl")
+        if not target_id or not ws_url:
+            raise ConnectionError("Chrome did not return a usable target for the new tab")
+
+        self.disconnect()
+        self.target_id = target_id
+        self.ws_url = ws_url
+        self.ws = websocket.create_connection(ws_url, timeout=30, suppress_origin=True)
+        return {
+            "ok": True,
+            "target_id": target_id,
+            "url": target.get("url", url),
+        }
+
     def health_check(self) -> Dict[str, Any]:
         """Check if Chrome is running and CDP is responsive."""
         try:
@@ -2107,7 +2131,21 @@ def _open_activity_tab(cdp: CDPConnection, tab_label: str) -> Dict[str, Any]:
     return json.loads(raw) if raw else {"found": False, "clicked": False}
 
 
-def _open_profile_activity_from_profile(cdp: CDPConnection) -> Dict[str, Any]:
+def _open_profile_activity_from_profile(cdp: CDPConnection, timeout: float = 25.0) -> Dict[str, Any]:
+    """Check immediately, then every five seconds before URL fallback."""
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout)
+    checks = 0
+    while True:
+        checks += 1
+        result = _try_open_profile_activity_from_profile(cdp)
+        result.update(checks=checks, elapsed_sec=round(time.monotonic() - started, 2))
+        if result.get("clicked") or time.monotonic() >= deadline:
+            return result
+        time.sleep(min(5.0, max(0.0, deadline - time.monotonic())))
+
+
+def _try_open_profile_activity_from_profile(cdp: CDPConnection) -> Dict[str, Any]:
     """Click the profile page's visible Show all posts link into activity."""
     raw = cdp.evaluate("""
         (() => {
@@ -2131,6 +2169,12 @@ def _open_profile_activity_from_profile(cdp: CDPConnection) -> Dict[str, Any]:
                 return JSON.stringify({found: false, clicked: false, reason: 'show_all_posts_not_found'});
             }
             preferred.scrollIntoView({block: 'center', inline: 'center'});
+            const rect = preferred.getBoundingClientRect();
+            const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+            const hit = document.elementFromPoint(x, y);
+            if (!hit || !preferred.contains(hit) || preferred.getAttribute('aria-disabled') === 'true') {
+                return JSON.stringify({found: true, clicked: false, reason: 'show_all_posts_obstructed'});
+            }
             const href = preferred.href || preferred.getAttribute('href') || '';
             preferred.click();
             return JSON.stringify({
@@ -2149,6 +2193,7 @@ def _extract_visible_activity_entries(
     cdp: CDPConnection,
     tab_key: str,
     timeout: float = 8.0,
+    minimum_direct_comments: int = 2,
 ) -> Dict[str, Any]:
     """Extract visible entries from the current activity tab."""
     raw = cdp.evaluate(f"""
@@ -2241,25 +2286,66 @@ def _extract_visible_activity_entries(
             }});
 
             const activities = [];
+            // LinkedIn's current Comments UI uses comment entities and thread
+            // entities.  The older `comments-comment-item` selector still
+            // occurs in some variants, so retain it as a compatibility path.
+            // Reply entries are collected separately and are used only when
+            // the profile does not have enough direct comments to assess its
+            // activity on their own.
+            const commentEntitySelector = [
+                '.comments-comment-entity',
+                '.comments-thread-entity',
+                '.comments-comment-item',
+            ].join(', ');
+            const commentReplySelector = [
+                '.comments-comment-entity--reply',
+                '.comment-social-activity--is-reply',
+                '.comments-replies-list',
+            ].join(', ');
+            const commentActorSelector = [
+                '.comments-comment-meta__description-title',
+                '.comments-comment-meta__actor',
+                '.comments-comment-meta__image-link',
+            ].join(', ');
             items.forEach((item, i) => {{
                 if (i >= 15) return;
                 const card = item.card;
                 if (ignoredActivityNode(card)) return;
                 const cardText = normalize(card.innerText || card.textContent);
+                let commentKind = 'comment';
                 if ({json.dumps(tab_key)} === 'comments' && profileName) {{
                     const profileCommentMarker = profileName.toLowerCase() + ' commented on this';
                     const cardLooksLikeProfileComment = cardText.toLowerCase().includes(profileCommentMarker);
-                    const ownerCommentTimes = Array.from(card.querySelectorAll('.comments-comment-meta__data, time.comments-comment-meta__data, time'))
-                        .map((el) => {{
-                            const block = el.closest('.comments-comment-item, article, li, div') || el.parentElement || el;
+                    const entityNodes = [card, ...Array.from(card.querySelectorAll(commentEntitySelector))]
+                        .filter((node, index, list) => list.indexOf(node) === index);
+                    const ownerCommentTimes = entityNodes
+                        .map((entity) => {{
+                            const actorText = normalize(
+                                entity.querySelector(commentActorSelector)?.innerText ||
+                                entity.querySelector(commentActorSelector)?.textContent ||
+                                ''
+                            );
+                            const entityText = normalize(entity.innerText || entity.textContent);
+                            const ownsComment = actorText.toLowerCase().includes(profileName.toLowerCase()) ||
+                                entityText.toLowerCase().includes(profileName.toLowerCase());
+                            const timeEl = entity.querySelector('.comments-comment-meta__data, time.comments-comment-meta__data, time');
+                            const time = extractStrictRelativeTime(
+                                timeEl?.innerText || timeEl?.textContent || timeEl?.getAttribute('datetime') || ''
+                            );
                             return {{
-                                time: extractStrictRelativeTime(el.innerText || el.textContent || el.getAttribute('datetime') || ''),
-                                sample: normalize(block.innerText || block.textContent),
+                                time,
+                                ownsComment,
+                                isReply: entity.matches(commentReplySelector) || !!entity.closest(commentReplySelector),
+                                sample: entityText,
                             }};
                         }})
-                        .filter((entry) => entry.time && entry.sample.toLowerCase().includes(profileName.toLowerCase()));
+                        .filter((entry) => entry.time && entry.ownsComment);
                     if (ownerCommentTimes.length === 0 && !cardLooksLikeProfileComment) return;
                     item.timeText = item.timeText || (ownerCommentTimes[0] || {{}}).time || '';
+                    commentKind = ownerCommentTimes.some((entry) => entry.isReply) ||
+                        card.matches(commentReplySelector) || !!card.querySelector(commentReplySelector)
+                        ? 'reply'
+                        : 'comment';
                 }}
 
                 const textEl = card.querySelector(
@@ -2313,12 +2399,33 @@ def _extract_visible_activity_entries(
                     extractor_mode: item.mode,
                     post_url: postUrl,
                     index: i,
+                    comment_kind: {json.dumps(tab_key)} === 'comments' ? commentKind : '',
                 }});
             }});
 
+            let returnedActivities = activities;
+            let commentReplyFallback = {{used: false, direct_comments: 0, reply_comments: 0, minimum_direct_comments: {int(minimum_direct_comments)}}};
+            if ({json.dumps(tab_key)} === 'comments') {{
+                const directComments = activities.filter((activity) => activity.comment_kind !== 'reply');
+                const replyComments = activities.filter((activity) => activity.comment_kind === 'reply');
+                commentReplyFallback = {{
+                    used: directComments.length < {int(minimum_direct_comments)} && replyComments.length > 0,
+                    direct_comments: directComments.length,
+                    reply_comments: replyComments.length,
+                    minimum_direct_comments: {int(minimum_direct_comments)},
+                }};
+                // Replies supplement a sparse comment history. When two or
+                // more direct comments are available, they remain excluded so
+                // replies cannot inflate the activity score.
+                returnedActivities = commentReplyFallback.used
+                    ? activities
+                    : directComments;
+            }}
+
             return JSON.stringify({{
                 total_visible: items.length,
-                activities: activities,
+                activities: returnedActivities,
+                comment_reply_fallback: commentReplyFallback,
                 profile_name: profileName,
                 extractor_mode: strictNodes.length ? 'strict_feed_urn' : 'fallback_feed_update',
                 strict_visible: strictNodes.length,
@@ -2766,6 +2873,9 @@ def read_activity_tabs_detail(
     profile_url: str,
     max_seconds: float = 45.0,
     navigation_type: str = "direct_url",
+    tab_order: Optional[List[Tuple[str, str]]] = None,
+    minimum_direct_comments: int = 2,
+    disable_early_stop: bool = False,
 ) -> Dict[str, Any]:
     """Read posts/comments/reactions separately for contact ranking."""
     profile_base = canonicalize_linkedin_profile_url(profile_url)
@@ -2850,7 +2960,7 @@ def read_activity_tabs_detail(
                 return {**invalid, "source_tab": "profile", "tabs": tabs}
             if ready_state.get("ready") and bounded_pause(0.5, 1.25):
                 try:
-                    profile_activity_open_result = _open_profile_activity_from_profile(cdp)
+                    profile_activity_open_result = _open_profile_activity_from_profile(cdp, timeout=min(25, max(0, remaining() - 4)))
                     if profile_activity_open_result.get("clicked"):
                         bounded_pause(0.75, 1.5)
                         _wait_for_linkedin_ready(
@@ -2866,8 +2976,8 @@ def read_activity_tabs_detail(
             else:
                 profile_activity_open_result = {"found": False, "clicked": False, "via": "profile_page", "load_state": ready_state}
 
-    tab_order = ACTIVITY_SELECTOR_RANKING_TAB_ORDER if selector_based else ACTIVITY_RANKING_TAB_ORDER
-    for tab_key, tab_label in tab_order:
+    selected_tab_order = tab_order or (ACTIVITY_SELECTOR_RANKING_TAB_ORDER if selector_based else ACTIVITY_RANKING_TAB_ORDER)
+    for tab_key, tab_label in selected_tab_order:
         if remaining() < 4:
             return timeout_result(tab_key, "insufficient_budget_before_tab")
         activity_url = _activity_url_for_tab(profile_base, tab_key)
@@ -3014,6 +3124,7 @@ def read_activity_tabs_detail(
                 cdp,
                 tab_key,
                 timeout=min(8, max(3, remaining())),
+                minimum_direct_comments=minimum_direct_comments,
             )
         except (TimeoutError, RuntimeError) as exc:
             return timeout_result(tab_key, "activity_extract_failed_or_timed_out", error_detail=str(exc))
@@ -3034,7 +3145,7 @@ def read_activity_tabs_detail(
             "activity_classification_uncertain": total_visible > 0 and parseable == 0,
         }
         level = partial_activity_level()
-        if level == "Very active":
+        if level == "Very active" and not disable_early_stop:
             return {
                 "error": False,
                 "profile_url": profile_url,
@@ -5809,14 +5920,31 @@ class LinkedInSession:
 
         return read_activity_tab(self.cdp, self.sim, profile_url, max_seconds=max_seconds)
 
-    def read_activity_detail(self, profile_url: str, max_seconds: float = 45.0, navigation_type: str = "direct_url") -> Dict[str, Any]:
+    def read_activity_detail(
+        self,
+        profile_url: str,
+        max_seconds: float = 45.0,
+        navigation_type: str = "direct_url",
+        tab_order: Optional[List[Tuple[str, str]]] = None,
+        minimum_direct_comments: int = 2,
+        disable_early_stop: bool = False,
+    ) -> Dict[str, Any]:
         """Read profile activity tabs separately for ranking."""
         self._enforce_rate_limit()
         danger = self._check_danger()
         if danger and danger != "invalid_profile_or_404":
             return {"error": True, "danger": danger}
 
-        return read_activity_tabs_detail(self.cdp, self.sim, profile_url, max_seconds=max_seconds, navigation_type=navigation_type)
+        return read_activity_tabs_detail(
+            self.cdp,
+            self.sim,
+            profile_url,
+            max_seconds=max_seconds,
+            navigation_type=navigation_type,
+            tab_order=tab_order,
+            minimum_direct_comments=minimum_direct_comments,
+            disable_early_stop=disable_early_stop,
+        )
 
     def set_notifications(self, enable: bool = True) -> bool:
         """Toggle notifications for the current profile."""

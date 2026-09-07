@@ -70,7 +70,9 @@ OUTREACH_CONTROL_PROSPECTS_START_ROW = "Prospects Start Row"
 OUTREACH_CONTROL_APPROVED_STATUSES = {"approved", "in progress", "partial"}
 OUTREACH_CONTROL_TERMINAL_STATUSES = {"done"}
 
-DEFAULT_TARGET = 20
+DEFAULT_TARGET = 30
+DEFAULT_LANE_TARGETS = {"Design": 15, "Automation": 15}
+DEFAULT_LANE_SPLIT_MARKER = "Autonomous lane split: balanced Design / Automation."
 QUEUE_BUFFER_LIMIT = 30
 DAILY_CONN_REQ_LIMIT = 30
 WEEKLY_CONN_REQ_LIMIT = 150
@@ -2165,6 +2167,121 @@ def _assign_outreach_workers(queue: List[Dict[str, Any]], worker_config: Optiona
     }
 
 
+def _select_queue_for_lane_targets(
+    queue: List[Dict[str, Any]], lane_targets: Dict[str, int]
+) -> Tuple[List[Dict[str, Any]], Dict[str, int], Dict[str, int]]:
+    """Keep source order while selecting an exact, explicit lane allocation."""
+    normalized_targets = {
+        str(lane).strip(): max(0, int(target))
+        for lane, target in lane_targets.items()
+        if str(lane).strip()
+    }
+    selected: List[Dict[str, Any]] = []
+    selected_counts = {lane: 0 for lane in normalized_targets}
+    available_counts = {lane: 0 for lane in normalized_targets}
+    for prospect in queue:
+        lane = str(prospect.get("primary_lane") or "").strip()
+        if lane not in normalized_targets:
+            continue
+        available_counts[lane] += 1
+        if selected_counts[lane] < normalized_targets[lane]:
+            selected.append(prospect)
+            selected_counts[lane] += 1
+    return selected, selected_counts, available_counts
+
+
+def _auto_assign_missing_primary_lanes(
+    queue: List[Dict[str, Any]],
+    remaining: int,
+    lane_targets: Dict[str, int],
+    worker_config: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Assign only eligible blank-lane prospects before a queue is frozen.
+
+    The input comes from ``load_prospect_queue``, which already excludes used
+    prospects and rows without a LinkedIn target. Existing lanes are immutable.
+    With an explicit daily split we fill the largest lane deficit across the
+    scanned queue. Without one, we balance only the imminent prepared batch.
+    """
+    workers_by_lane = _read_outreach_workers(worker_config)
+    enabled_lanes = list(workers_by_lane)
+    summary: Dict[str, Any] = {
+        "enabled": bool(enabled_lanes),
+        "mode": "lane_targets" if lane_targets else "batch_balance",
+        "assignments": [],
+        "counts": {},
+    }
+    if not enabled_lanes:
+        summary["skip_reason"] = "outreach_workers_not_enabled"
+        return summary
+
+    normalized_targets = {
+        lane: max(0, int(target))
+        for lane, target in lane_targets.items()
+        if lane in workers_by_lane and int(target) > 0
+    }
+    scope = queue if normalized_targets else queue[:max(0, int(remaining))]
+    counts = {lane: 0 for lane in enabled_lanes}
+    for prospect in scope:
+        lane = str(prospect.get("primary_lane") or "").strip()
+        if lane in counts:
+            counts[lane] += 1
+
+    for prospect in scope:
+        if str(prospect.get("primary_lane") or "").strip():
+            continue
+        if normalized_targets:
+            deficits = {
+                lane: normalized_targets[lane] - counts[lane]
+                for lane in normalized_targets
+            }
+            candidates = [lane for lane in enabled_lanes if deficits.get(lane, 0) > 0]
+            if not candidates:
+                break
+            chosen_lane = max(candidates, key=lambda lane: (deficits[lane], -enabled_lanes.index(lane)))
+        else:
+            chosen_lane = min(enabled_lanes, key=lambda lane: (counts[lane], enabled_lanes.index(lane)))
+        prospect["primary_lane"] = chosen_lane
+        counts[chosen_lane] += 1
+        summary["assignments"].append(
+            {
+                "prospect_id": str(prospect.get("id") or ""),
+                "company": str(prospect.get("company") or ""),
+                "row_number": int(prospect.get("_row_number") or 0),
+                "primary_lane": chosen_lane,
+            }
+        )
+
+    summary["counts"] = counts
+    return summary
+
+
+def _persist_primary_lane_assignments(
+    creds: str,
+    obf_url: str,
+    prospects_tab: str,
+    assignments: List[Dict[str, Any]],
+) -> None:
+    """Write prep-time lane assignments in one bounded Sheets update."""
+    if not assignments:
+        return
+    client = get_client(creds)
+    spreadsheet = open_sheet(client, obf_url)
+    worksheet = get_worksheet(spreadsheet, prospects_tab)
+    headers = worksheet.row_values(1)
+    lane_column = _find_first_index(headers, "Primary Lane")
+    if lane_column is None:
+        raise ValueError(f"{prospects_tab} is missing the required Primary Lane column.")
+    updates = [
+        (int(assignment["row_number"]), lane_column + 1, assignment["primary_lane"])
+        for assignment in assignments
+        if int(assignment.get("row_number") or 0) >= 2
+    ]
+    if len(updates) != len(assignments):
+        raise ValueError("Cannot persist a lane assignment without a valid Prospects row number.")
+    _batch_update_cells(worksheet, updates)
+
+
 def _load_prepared_session(date_value: str, prepared_path: Optional[str] = None) -> Dict[str, Any]:
     path = Path(prepared_path).expanduser() if prepared_path else prepared_session_path(date_value)
     if not path.exists():
@@ -2314,6 +2431,26 @@ def _control_prospects_start_row(row: Dict[str, Any]) -> Optional[int]:
     return parsed if parsed >= 2 else None
 
 
+def _balanced_lane_targets(volume: int) -> Dict[str, int]:
+    """Split a prep volume as evenly as possible across the two offers."""
+    volume = max(0, int(volume))
+    if not volume:
+        return {}
+    automation = volume // 2
+    return {"Design": volume - automation, "Automation": automation}
+
+
+def _control_lane_targets(row: Dict[str, Any], remaining: Optional[int] = None) -> Dict[str, int]:
+    """Every two-account prep receives an explicit, target-aware lane split.
+
+    Older Outreach Control rows did not carry a lane marker. Deriving the split
+    from the remaining target keeps those rows safe too, instead of allowing an
+    all-Design or all-Automation execution merely because the old note is absent.
+    """
+    volume = _control_target(row) if remaining is None else max(0, int(remaining))
+    return _balanced_lane_targets(volume)
+
+
 def _latest_successful_control_row(
     rows: List[Dict[str, Any]],
     date_value: str,
@@ -2359,11 +2496,13 @@ def _append_auto_created_control_row(
         source_date = format_sheet_date(source.get("Date", ""))
 
     target = source_target if source_target and source_target > 0 else DEFAULT_TARGET
+    lane_targets = _balanced_lane_targets(target)
+    lane_note = f" {DEFAULT_LANE_SPLIT_MARKER}" if lane_targets else ""
     note = (
         f"Auto-created for {date_value} from completed Outreach Control row {source_date}; "
-        f"target copied as {target}."
+        f"target copied as {target}.{lane_note}"
         if source_date
-        else f"Auto-created for {date_value}; no completed prior row found, using default target {target}."
+        else f"Auto-created for {date_value}; no completed prior row found, using default target {target}.{lane_note}"
     )
     data: Dict[str, Any] = {
         "Date": date_value,
@@ -2386,6 +2525,7 @@ def _append_auto_created_control_row(
         "target_source": "previous_completed_row" if source else "default",
         "target": target,
         "prospects_start_row": source_start_row,
+        "lane_targets": lane_targets,
         "notes": note,
     }
 
@@ -2680,6 +2820,7 @@ def _load_queue(
     shuffle: bool = True,
     start_row: Optional[int] = None,
     prospects_tab: str = "Prospects",
+    limit: int = QUEUE_BUFFER_LIMIT,
 ) -> List[Dict[str, Any]]:
     if mock_queue:
         if isinstance(mock_queue, list):
@@ -2692,7 +2833,7 @@ def _load_queue(
     return load_prospect_queue(
         credentials_path=creds,
         sheet_url=obf_url,
-        limit=QUEUE_BUFFER_LIMIT,
+        limit=limit,
         shuffle=shuffle,
         start_row=start_row,
         prospects_tab=prospects_tab,
@@ -2721,6 +2862,9 @@ def _make_summary_message(result: Dict[str, Any]) -> str:
 
 def _make_prepare_summary_message(result: Dict[str, Any]) -> str:
     blockers = result.get("blockers") or ["None"]
+    lane_assignment = result.get("lane_auto_assignment") or {}
+    assignments = lane_assignment.get("assignments") or []
+    lane_counts = lane_assignment.get("assigned_counts") or {}
     return "\n".join(
         [
             "LinkedIn outreach prep summary",
@@ -2728,6 +2872,7 @@ def _make_prepare_summary_message(result: Dict[str, Any]) -> str:
             f"Target remaining: {result.get('target_remaining', 0)}",
             f"Prospects available: {result.get('queue_count', 0)}",
             f"Planned sends: {result.get('planned_count', 0)}",
+            f"Auto-assigned blank lanes: {len(assignments)} {lane_counts if assignments else ''}".rstrip(),
             f"Blocked: {', '.join(blockers)}",
         ]
     )
@@ -3997,6 +4142,7 @@ def prepare_8_30_session(args: argparse.Namespace) -> Dict[str, Any]:
         "status": control_row.get("Status", ""),
         "approved": control_row.get("Approved", ""),
         "prospects_start_row": _control_prospects_start_row(control_row),
+        "lane_targets": _control_lane_targets(control_row, remaining),
     }
     # Keep the old cache key for backward-compatible prepared-session loading.
     result["daily_action"] = {
@@ -4023,7 +4169,20 @@ def prepare_8_30_session(args: argparse.Namespace) -> Dict[str, Any]:
         return result
 
     prospects_start_row = _control_prospects_start_row(control_row)
-    queue = _load_queue(creds, args.obf_url, mock_queue, shuffle=False, start_row=prospects_start_row, prospects_tab=args.prospects_tab)
+    lane_targets = _control_lane_targets(control_row, remaining)
+    queue = _load_queue(
+        creds,
+        args.obf_url,
+        mock_queue,
+        shuffle=False,
+        start_row=prospects_start_row,
+        prospects_tab=args.prospects_tab,
+        # A start row is a priority, not an exclusion. For a required split we
+        # must inspect the whole eligible pool; otherwise a long Design-only
+        # priority segment could hide valid Automation overflow rows and waste
+        # the operating day. Only the selected ``remaining`` rows are frozen.
+        limit=0 if lane_targets else QUEUE_BUFFER_LIMIT,
+    )
     result["queue_count"] = len(queue)
     result["prospects_start_row"] = prospects_start_row
     if not queue:
@@ -4047,6 +4206,87 @@ def prepare_8_30_session(args: argparse.Namespace) -> Dict[str, Any]:
         )
         result["summary_message"] = _make_prepare_summary_message(result)
         return result
+
+    # Make missing routing explicit before any sequence values or browser work
+    # are generated. The sheet becomes the source of truth for the frozen queue.
+    try:
+        lane_auto_assignment = _auto_assign_missing_primary_lanes(
+            queue=queue,
+            remaining=remaining,
+            lane_targets=lane_targets,
+            worker_config=getattr(args, "worker_config", None),
+        )
+        assignments = lane_auto_assignment.get("assignments") or []
+        assigned_counts: Dict[str, int] = {}
+        for assignment in assignments:
+            lane = str(assignment.get("primary_lane") or "").strip()
+            if lane:
+                assigned_counts[lane] = assigned_counts.get(lane, 0) + 1
+        result["lane_auto_assignment"] = {
+            **lane_auto_assignment,
+            "assigned_counts": assigned_counts,
+            "persisted": False,
+        }
+        if assignments and mock_queue is None and not getattr(args, "no_write", False):
+            _persist_primary_lane_assignments(
+                creds=creds,
+                obf_url=args.obf_url,
+                prospects_tab=args.prospects_tab,
+                assignments=assignments,
+            )
+            result["lane_auto_assignment"]["persisted"] = True
+    except Exception as exc:
+        result.update(
+            {
+                "ok": False,
+                "status": "blocked_lane_auto_assignment",
+                "blockers": [f"Unable to auto-assign blank Primary Lane values: {exc}"],
+            }
+        )
+        result["summary_message"] = _make_prepare_summary_message(result)
+        return result
+
+    if lane_targets:
+        if sum(lane_targets.values()) != remaining:
+            result.update(
+                {
+                    "ok": False,
+                    "status": "blocked_lane_target_mismatch",
+                    "blockers": [
+                        f"Outreach Control lane targets total {sum(lane_targets.values())}, "
+                        f"but target remaining is {remaining}."
+                    ],
+                    "lane_targets": lane_targets,
+                }
+            )
+            result["summary_message"] = _make_prepare_summary_message(result)
+            return result
+        balanced_queue, selected_counts, available_counts = _select_queue_for_lane_targets(
+            queue, lane_targets
+        )
+        result["lane_targets"] = lane_targets
+        result["lane_available_counts"] = available_counts
+        result["lane_selected_counts"] = selected_counts
+        if selected_counts != lane_targets:
+            shortages = [
+                f"{lane}: {selected_counts.get(lane, 0)}/{target}"
+                for lane, target in lane_targets.items()
+                if selected_counts.get(lane, 0) < target
+            ]
+            result.update(
+                {
+                    "ok": False,
+                    "status": "blocked_lane_queue_shortage",
+                    "blockers": [
+                        "Autonomous baseline needs an even lane split; available "
+                        + ", ".join(shortages)
+                        + "."
+                    ],
+                }
+            )
+            result["summary_message"] = _make_prepare_summary_message(result)
+            return result
+        queue = balanced_queue
 
     malformed = []
     for prospect in queue:
@@ -4130,6 +4370,9 @@ def prepare_8_30_session(args: argparse.Namespace) -> Dict[str, Any]:
         "prospects_tab": args.prospects_tab,
         "planned_count": remaining,
         "queue_count": len(queue),
+        "lane_targets": lane_targets,
+        "lane_auto_assignment": result.get("lane_auto_assignment", {}),
+        "lane_selected_counts": result.get("lane_selected_counts", {}),
         "queue": prepared_queue,
         "runtime_plan": runtime_plan[:remaining],
         "worker_plan": worker_plan,

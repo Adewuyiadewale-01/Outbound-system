@@ -128,6 +128,7 @@ def classify_review_rows(
     checkpoint: str = "first",
     lane_scope: str = "all",
     review_slice: str = "",
+    approval_required: bool = True,
 ) -> Dict[str, Any]:
     """Return the group action and the exact per-lead destination.
 
@@ -147,6 +148,29 @@ def classify_review_rows(
         for row in normalized
         if normalized_lane(row.get("Primary Lane")) == "Design" and checked(row.get("Approved"))
     ]
+    if not approval_required:
+        routed_rows = normalized
+        if normalized_scope in {"design", "automation"}:
+            routed_rows = [
+                row for row in normalized
+                if normalized_lane(row.get("Primary Lane")).lower() == normalized_scope
+            ]
+        prefinal = []
+        for row in routed_rows:
+            routed = dict(row)
+            lane = normalized_lane(row.get("Primary Lane"))
+            routed["Original Lane"] = lane
+            routed["Primary Lane"] = lane
+            prefinal.append(routed)
+        return {
+            "action": "process_all_lanes",
+            "threshold": threshold,
+            "approved_design_count": len(approved_design),
+            "threshold_met": True,
+            "prefinal": prefinal,
+            "archive": [],
+            "total": len(normalized),
+        }
     if checkpoint == "fallback" and normalized_scope == "automation":
         prefinal = []
         for row in normalized:
@@ -236,6 +260,7 @@ def classify_computation_leads(
     checkpoint: str = "first",
     lane_scope: str = "all",
     review_slice: str = "",
+    approval_required: bool = True,
 ) -> Dict[str, Any]:
     review_rows = []
     by_id = {}
@@ -258,6 +283,7 @@ def classify_computation_leads(
         checkpoint=checkpoint,
         lane_scope=lane_scope,
         review_slice=review_slice,
+        approval_required=approval_required,
     )
     for key in ("prefinal", "archive"):
         selected = []
@@ -760,6 +786,7 @@ def finalize_computation(
         checkpoint=checkpoint,
         lane_scope=lane_scope,
         review_slice=review_slice,
+        approval_required=clean_text(computation.get("selection_mode")) != "approval_disabled",
     )
     if plan["action"] == "skip_waiting_fallback":
         return plan

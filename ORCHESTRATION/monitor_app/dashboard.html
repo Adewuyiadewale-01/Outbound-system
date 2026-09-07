@@ -10,7 +10,7 @@
       document.documentElement.classList.add('electron-shell');
     }
   </script>
-  <link rel="stylesheet" href="dashboard.css?v=preview-30">
+  <link rel="stylesheet" href="dashboard.css?v=preview-31">
 </head>
 <body>
   <div class="app-container open" id="appContainer">
@@ -37,8 +37,14 @@
         <button class="nav-item" data-page="lead-prep">
           <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c.6-3.6 2.5-5.5 5.5-5.5s4.9 1.9 5.5 5.5M17 8v6M14 11h6"/></svg></span><span>Lead Prep</span>
         </button>
+        <button class="nav-item" data-page="job-discovery">
+          <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4M11 8v6M8 11h6"/></svg></span><span>Job Discovery</span>
+        </button>
         <button class="nav-item" data-page="outreach">
           <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m4 5 16 7-16 7 3-7-3-7Z"/><path d="M7 12h8"/></svg></span><span>Outreach</span>
+        </button>
+        <button class="nav-item" data-page="post-engagement">
+          <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M7 11v8M7 11l3-6c.6-1.1 2.3-.7 2.3.6V10h5.3c1.4 0 2.4 1.3 2 2.6l-1.4 4.8c-.3 1-1.2 1.6-2.2 1.6H7M3 11h4v8H3z"/></svg></span><span>Post Engagement</span>
         </button>
 
         <div class="nav-label nav-label-spaced">Management</div>
@@ -77,6 +83,7 @@
             <span>Today</span>
             <strong id="todayDate">—</strong>
           </div>
+          <button class="icon-button" id="fullScreenBtn" title="Enter full screen" aria-label="Enter full screen"><svg viewBox="0 0 24 24"><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M4 16v4h4"/></svg></button>
           <button class="icon-button" id="closeAppBtn" title="Hide control center" aria-label="Hide control center"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg></button>
         </div>
       </header>
@@ -409,7 +416,8 @@
             </div>
             <div class="lead-settings-grid">
               <label><span class="config-label">Prep time <i class="context-help" tabindex="0" role="note" aria-label="About preparation time" data-tooltip="The local time when autonomous Lead Review preparation should begin.">!</i></span><input id="leadPrepTime" type="time" value="14:00"></label>
-              <label><span class="config-label">Base volume <i class="context-help" tabindex="0" role="note" aria-label="About base volume" data-tooltip="The number of company groups selected in the first and normally only preparation batch.">!</i></span><input id="leadPrepVolume" type="number" min="1" max="500" value="50"></label>
+              <label><span class="config-label">Base volume <i class="context-help" tabindex="0" role="note" aria-label="About base volume" data-tooltip="The number of company groups prepared each day. The standard workflow prepares 60: 30 Design and 30 Automation.">!</i></span><input id="leadPrepVolume" type="number" min="1" max="500" value="60"></label>
+              <label><span class="config-label">Lead approval <i class="context-help" tabindex="0" role="note" aria-label="About lead approval" data-tooltip="Disabled by default: every prepared lead is processed in its assigned lane. Enable it when you want processing to wait for approved rows only.">!</i></span><select id="leadPrepApprovalGate"><option value="disabled">Disabled · process all prepared leads</option><option value="enabled">Enabled · process approved leads only</option></select></label>
               <label><span class="config-label">Archive overlap scan <i class="context-help" tabindex="0" role="note" aria-label="About archive overlap scan" data-tooltip="Detection-only identity scan against archived research. It never reuses research or consumes archive entries during preparation.">!</i></span><select id="leadPrepOverlapScanMode"><option value="auto">Automatic</option><option value="off">Disabled</option></select></label>
               <label><span class="config-label">Fresh-volume top-ups <i class="context-help" tabindex="0" role="note" aria-label="About fresh-volume top-ups" data-tooltip="When enabled, overlap-driven replacement waves restore the fresh target. Disable it to accept one base batch and settle for the day.">!</i></span><select id="leadPrepTopUpMode"><option value="auto">Enabled</option><option value="off">Disabled · one batch only</option></select></label>
               <button class="secondary-btn obf-save-btn" id="leadPrepSaveBtn">
@@ -657,6 +665,111 @@
           </div>
         </section>
 
+        <section class="page-view" data-page="post-engagement">
+          <article class="panel pe-command">
+            <div class="pe-command-copy">
+              <span class="section-kicker">Daily campaign</span>
+              <h2 id="peStatusTitle">Waiting for a source post</h2>
+              <p id="peStatusDetail">Add a recently published LinkedIn post to build today’s reactor pool.</p>
+            </div>
+            <div class="pe-command-actions">
+              <span class="obf-status-pill neutral" id="peStatusPill">Waiting</span>
+              <button class="utility-btn" id="peDryRunBtn">Run audit</button>
+              <button class="utility-btn" id="peArchiveFreshBtn">Archive &amp; fresh run</button>
+              <button class="utility-btn" id="pePauseBtn" disabled>Pause safely</button>
+              <button class="utility-btn" id="peResumeBtn" disabled>Resume</button>
+              <button class="primary-btn" id="peRunBtn">Launch workflow</button>
+            </div>
+          </article>
+
+          <div class="pe-progress-grid">
+            <article class="kpi-card"><div class="kpi-topline"><span>Daily engagement</span><span class="kpi-code">LK</span></div><strong id="peEngagedValue">0 / —</strong><small id="peEngagedDetail">target assigned when the day starts</small></article>
+            <article class="kpi-card"><div class="kpi-topline"><span>Engagement batches</span><span class="kpi-code">BT</span></div><strong id="peBatchValue">—</strong><small id="peBatchDetail">three paced windows per live campaign</small></article>
+            <article class="kpi-card"><div class="kpi-topline"><span>Connections</span><span class="kpi-code">CN</span></div><strong id="peConnectionsValue">0 / 10</strong><small>successful requests; follows do not consume slots</small></article>
+            <article class="kpi-card"><div class="kpi-topline"><span>Reactor pool</span><span class="kpi-code">RX</span></div><strong id="peCandidatesValue">0</strong><small id="peCoverageDetail">no source extracted</small></article>
+            <article class="kpi-card"><div class="kpi-topline"><span>Follows</span><span class="kpi-code">FL</span></div><strong id="peHighSignalValue">0 / 10</strong><small>successful follows; capped independently from connections</small></article>
+          </div>
+
+          <article class="panel pe-source-panel">
+            <div class="panel-heading compact"><div><span class="section-kicker">Source posts</span><h2>Build today’s candidate pool</h2></div></div>
+            <div class="pe-source-form">
+              <input id="peSourceUrl" type="url" placeholder="Paste a LinkedIn post URL">
+              <select id="peSourceCdpAccount" aria-label="CDP lane for this campaign"><option value="automation">Automation lane · 18801</option><option value="design">Design lane · 18800</option></select>
+              <button class="primary-btn" id="peAddSourceBtn">Add post</button>
+            </div>
+            <div class="pe-source-list" id="peSourceList"><div class="empty-state">No source posts added today.</div></div>
+          </article>
+
+          <div class="pe-tabbar" role="tablist" aria-label="Post Engagement views">
+            <button class="pe-tab active" data-pe-tab="audit">Candidate Audit</button>
+            <button class="pe-tab" data-pe-tab="engagement">Engagement</button>
+            <button class="pe-tab" data-pe-tab="connections">Connections</button>
+            <button class="pe-tab" data-pe-tab="history">History &amp; Settings</button>
+          </div>
+          <article class="panel pe-table-panel">
+            <div class="pe-panel-view active" data-pe-panel="audit"><div class="panel-heading compact"><div><span class="section-kicker">Candidate audit</span><h2>Profiles discovered and inspected</h2></div></div><div class="pe-table-wrap"><table><thead><tr><th>Profile</th><th>Location</th><th>Followers</th><th>Recent posts</th><th>Activity</th><th>State</th></tr></thead><tbody id="peAuditBody"></tbody></table></div></div>
+            <div class="pe-panel-view" data-pe-panel="engagement"><div class="panel-heading compact"><div><span class="section-kicker">Engagement</span><h2>Like assignments and outcomes</h2></div></div><div class="pe-table-wrap"><table><thead><tr><th>Profile</th><th>Assigned</th><th>Completed</th><th>Newest post</th><th>OBF diversion</th><th>Result</th></tr></thead><tbody id="peEngagementBody"></tbody></table></div></div>
+            <div class="pe-panel-view" data-pe-panel="connections"><div class="panel-heading compact"><div><span class="section-kicker">Connections</span><h2>Ranked connection and follow decisions</h2></div></div><div class="pe-table-wrap"><table><thead><tr><th>Profile</th><th>Geography</th><th>5-day signals</th><th>Followers</th><th>Decision</th></tr></thead><tbody id="peConnectionsBody"></tbody></table></div></div>
+            <div class="pe-panel-view" data-pe-panel="history">
+              <div class="panel-heading compact"><div><span class="section-kicker">History &amp; settings</span><h2>Campaign record and operating rules</h2></div><button class="utility-btn" id="peSaveSettingsBtn">Save settings</button></div>
+              <div class="pe-settings-grid">
+                <label>CDP account<select id="peCdpAccount"><option value="design">Design · 18800</option><option value="automation">Automation · 18801</option></select></label>
+                <label>Engagement minimum<input id="peMinTarget" type="number" min="1" max="100"></label>
+                <label>Engagement maximum<input id="peMaxTarget" type="number" min="1" max="100"></label>
+                <label>Connection target<input id="peConnectionTarget" type="number" min="0" max="30"></label>
+                <label>Follow maximum<input id="peFollowTarget" type="number" min="0" max="30"></label>
+                <label>Follower cutoff<input id="peFollowerLimit" type="number" min="0" step="100"></label>
+                <label>Source coverage<input id="peCoverage" type="number" min="0.5" max="1" step="0.01"></label>
+                <label>Engagement batches<input id="peBatchCount" type="number" min="1" max="6"></label>
+                <label>Between batches (minutes)<input id="peBatchDelay" type="number" min="0" max="360"></label>
+              </div>
+              <div class="pe-table-wrap"><table><thead><tr><th>Date</th><th>Outcome</th><th>Engaged</th><th>Connections</th><th>Followed</th><th>Mode</th></tr></thead><tbody id="peHistoryBody"></tbody></table></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="page-view" data-page="job-discovery">
+          <article class="panel job-discovery-hero">
+            <div>
+              <span class="section-kicker">Daily job discovery</span>
+              <h2 id="jobDiscoveryStatusTitle">Loading local service…</h2>
+              <p id="jobDiscoveryStatusDetail">Checking the discovery service, scheduler, and durable local state.</p>
+            </div>
+            <div class="job-discovery-hero-status"><span id="jobDiscoveryStatusPill" class="obf-status-pill neutral">Checking</span><small id="jobDiscoveryUpdated">—</small></div>
+          </article>
+
+          <div class="kpi-grid job-discovery-kpis">
+            <article class="kpi-card"><div class="kpi-topline"><span>Verified jobs</span><span class="kpi-code"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 5V3m8 2V3M4 10h16"/></svg></span></div><strong id="jobDiscoveryJobsMetric">—</strong><small id="jobDiscoveryJobsDetail">active + review records</small></article>
+            <article class="kpi-card"><div class="kpi-topline"><span>Review queue</span><span class="kpi-code"><svg viewBox="0 0 24 24"><path d="m12 4 9 16H3L12 4Z"/><path d="M12 9v5M12 17h.01"/></svg></span></div><strong id="jobDiscoveryReviewMetric">—</strong><small>jobs with uncertain signals</small></article>
+            <article class="kpi-card"><div class="kpi-topline"><span>Today’s hydration</span><span class="kpi-code"><svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg></span></div><strong id="jobDiscoveryHydratedMetric">—</strong><small id="jobDiscoveryHydratedDetail">latest run</small></article>
+            <article class="kpi-card"><div class="kpi-topline"><span>Query cursor</span><span class="kpi-code"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div><strong id="jobDiscoveryCursorMetric">—</strong><small id="jobDiscoveryCursorDetail">of enabled searches</small></article>
+            <article class="kpi-card"><div class="kpi-topline"><span>Run health</span><span class="kpi-code"><svg viewBox="0 0 24 24"><path d="M3 12h4l2.2-5 4.1 10 2.2-5H21"/></svg></span></div><strong id="jobDiscoveryHealthMetric">—</strong><small id="jobDiscoveryHealthDetail">last recorded run</small></article>
+          </div>
+
+          <article class="panel job-discovery-controls">
+            <div class="panel-heading compact"><div><span class="section-kicker">Control plane</span><h2>Schedule and manual actions</h2></div></div>
+            <div class="job-discovery-control-grid">
+              <button class="obf-switch" id="jobDiscoveryEnabledToggle" type="button" role="switch" aria-checked="false"><span class="obf-switch-track"><i></i></span><span><strong>Daily automation</strong><small id="jobDiscoveryEnabledDetail">Manual runs only</small></span></button>
+              <div class="job-discovery-service"><span class="section-kicker">Scheduler service</span><strong id="jobDiscoverySchedulerState">Checking…</strong><button class="secondary-btn" id="jobDiscoverySchedulerBtn" type="button">Start scheduler</button></div>
+              <div class="job-discovery-actions"><button class="primary-btn" id="jobDiscoveryRunBtn" type="button">Run discovery now</button><button class="secondary-btn" id="jobDiscoveryReverifyBtn" type="button">Reverify stored jobs</button><button class="utility-btn" id="jobDiscoveryRefreshBtn" type="button">Refresh status</button></div>
+            </div>
+            <div class="job-discovery-settings-grid">
+              <label><span>Daily run time</span><input id="jobDiscoveryRunTime" type="time" value="08:00"></label>
+              <label><span>Queries per run</span><input id="jobDiscoveryMaxQueries" type="number" min="1" max="500" value="180"></label>
+              <label><span>Listings per run</span><input id="jobDiscoveryMaxListings" type="number" min="1" max="1000" value="180"></label>
+              <button class="utility-btn" id="jobDiscoverySaveBtn" type="button">Save runtime controls</button>
+            </div>
+            <p class="job-discovery-feedback" id="jobDiscoveryFeedback">Configuration is stored locally in the Job Discovery service. The scheduler must be running for automatic runs.</p>
+          </article>
+
+          <div class="job-discovery-monitor-grid">
+            <article class="panel"><div class="panel-heading compact"><div><span class="section-kicker">Live state</span><h2>Run and query progress</h2></div></div><div class="job-discovery-facts" id="jobDiscoveryFacts"><div><span>Active run</span><strong>Loading…</strong></div></div><div class="job-discovery-progress-list" id="jobDiscoveryProgress"><div class="empty-state">Loading query checkpoints.</div></div></article>
+            <article class="panel"><div class="panel-heading compact"><div><span class="section-kicker">Service diagnostics</span><h2>Local boundary</h2></div></div><div class="job-discovery-facts" id="jobDiscoveryDiagnostics"><div><span>Service root</span><strong>Loading…</strong></div></div></article>
+          </div>
+
+          <article class="panel job-discovery-history-panel"><div class="panel-heading compact"><div><span class="section-kicker">Run record</span><h2>Recent discovery runs</h2></div></div><div class="obf-history-wrap"><table class="obf-history-table"><thead><tr><th>Started</th><th>Trigger</th><th>Status</th><th>Queries</th><th>Hydrated</th><th>New jobs</th><th>Notes</th></tr></thead><tbody id="jobDiscoveryHistoryBody"><tr><td colspan="7"><div class="empty-state">Loading local run history.</div></td></tr></tbody></table></div></article>
+        </section>
+
         <section class="page-view" data-page="outreach">
           <div class="page-summary-row">
             <div><strong>Outreach operations</strong><span>Connection withdrawals and their local queue in one operating view.</span></div>
@@ -838,6 +951,6 @@
       </div>
     </section>
   </div>
-  <script src="drawer.js?v=local-snapshot-12"></script>
+  <script src="drawer.js?v=local-snapshot-15"></script>
 </body>
 </html>

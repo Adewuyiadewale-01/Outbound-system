@@ -8,7 +8,7 @@ function createBrowserPreviewIpc() {
     prep_time: '08:25',
     exec_time: '08:30',
     max_sends: 20,
-    daily_volume: 12,
+    daily_volume: 30,
     prospects_start_row: 230,
     timezone: 'Africa/Lagos'
   };
@@ -21,7 +21,9 @@ function createBrowserPreviewIpc() {
     prep_time: '14:00',
     first_review_deadline: '18:00',
     fallback_review_deadline: '22:00',
-    base_volume: 100,
+    base_volume: 60,
+    processing_batch_size: 30,
+    approval_gate_enabled: false,
     overlap_scan_mode: 'auto',
     fresh_volume_top_up_mode: 'auto'
   };
@@ -360,6 +362,18 @@ function createBrowserPreviewIpc() {
         'start-withdrawal-full',
         'stop-withdrawal',
         'read-lead-prep-dashboard',
+        'read-post-engagement-dashboard',
+        'add-post-engagement-source',
+        'save-post-engagement-settings',
+        'start-post-engagement-dry-run',
+        'start-post-engagement-run',
+        'pause-post-engagement-run',
+        'resume-post-engagement-run',
+        'read-job-discovery-dashboard',
+        'save-job-discovery-settings',
+        'toggle-job-discovery-scheduler',
+        'start-job-discovery-run',
+        'start-job-discovery-reverify',
         'read-stats',
         'launch-chrome',
         'check-watcher-status',
@@ -384,6 +398,12 @@ function createBrowserPreviewIpc() {
       if (channel === 'read-history') return [];
       if (channel === 'read-obf-dashboard') return unavailableObfDashboard();
       if (channel === 'read-lead-prep-dashboard') return previewLeadPrepDashboard();
+      if (channel === 'read-job-discovery-dashboard') return {
+        available: false,
+        root: 'Daily Job Discovery service',
+        error: 'Start the local dashboard server to connect Job Discovery controls.',
+        config: {}, scheduler_enabled: false, is_running: false, status: {}
+      };
       if (channel === 'refresh-lead-review-cache') return { ok: true, dashboard: previewLeadPrepDashboard() };
       if (channel === 'save-lead-research-progress') return {
         ok: true,
@@ -417,6 +437,8 @@ function createBrowserPreviewIpc() {
           autonomous_prep_enabled: Boolean(value.autonomous_prep_enabled),
           prep_time: value.prep_time,
           base_volume: Number(value.base_volume || previewLeadPrepConfig.base_volume),
+          processing_batch_size: 30,
+          approval_gate_enabled: Boolean(value.approval_gate_enabled),
           overlap_scan_mode: value.overlap_scan_mode === 'off' ? 'off' : 'auto',
           fresh_volume_top_up_mode: value.fresh_volume_top_up_mode === 'off' ? 'off' : 'auto'
         };
@@ -442,6 +464,7 @@ const categoryHeaders = document.querySelectorAll('.category-header');
 const progressFraction = document.getElementById('progressFraction');
 const progressFill = document.getElementById('progressFill');
 const closeAppBtn = document.getElementById('closeAppBtn');
+const fullScreenBtn = document.getElementById('fullScreenBtn');
 const navItems = document.querySelectorAll('.nav-item');
 const pageViews = document.querySelectorAll('.page-view');
 const pageEyebrow = document.getElementById('pageEyebrow');
@@ -475,6 +498,16 @@ const pageMetadata = {
     eyebrow: 'Review to outreach',
     title: 'Lead Prep',
     description: 'Review, research, check activity, rank, and bridge leads into the outreach pipeline.'
+  },
+  'post-engagement': {
+    eyebrow: 'Audience development',
+    title: 'Post Engagement',
+    description: 'Turn high-engagement source posts into measured likes, follows, and qualified connections.'
+  },
+  'job-discovery': {
+    eyebrow: 'Opportunity sourcing',
+    title: 'Job Discovery',
+    description: 'Control the daily search service and monitor verified job discovery from its local source of truth.'
   },
   outreach: {
     eyebrow: 'Pipeline operations',
@@ -512,6 +545,8 @@ function showPage(pageName) {
   if (pageName === 'tasks') loadHistory();
   if (pageName === 'obf') refreshObfDashboard();
   if (pageName === 'lead-prep') refreshLeadPrepDashboard();
+  if (pageName === 'post-engagement') refreshPostEngagementDashboard();
+  if (pageName === 'job-discovery') refreshJobDiscoveryDashboard();
   if (pageName === 'outreach') refreshStats();
 }
 
@@ -741,7 +776,7 @@ function renderObfDashboard(data) {
     : 'Disabled · manual runs only';
   const editingSettings = Boolean(document.activeElement?.closest?.('.obf-settings-grid'));
   if (!editingSettings) {
-    document.getElementById('obfDailyVolume').value = data.control?.effective_target || summary.target || config.daily_volume || 20;
+    document.getElementById('obfDailyVolume').value = data.control?.effective_target || summary.target || config.daily_volume || 30;
     document.getElementById('obfStartRow').value = data.control?.prospects_start_row || config.prospects_start_row || '';
     document.getElementById('obfPrepTime').value = config.prep_time || '08:25';
     document.getElementById('obfExecTime').value = config.exec_time || '08:30';
@@ -975,9 +1010,15 @@ function formatLeadDeadlineTime(deadlineAt) {
   }).format(new Date(deadlineAt));
 }
 
-function leadReviewStatusCopy(review) {
+function leadReviewStatusCopy(review, approvalGateEnabled = false) {
   const approved = Number(review.approved_count || 0);
   const prepared = Number(review.prepared_count || 0);
+  if (!approvalGateEnabled && prepared) {
+    return {
+      title: 'Approval gate is disabled',
+      detail: `${prepared} prepared leads will be processed in their assigned lanes; approval remains optional.`
+    };
+  }
   if (review.processing_automation?.paused) {
     return {
       title: 'Processing paused for testing',
@@ -1193,7 +1234,7 @@ function renderLeadProcessing(data) {
   state.className = `obf-status-pill ${leads.length ? (processing.computation_file ? 'active' : 'success') : 'neutral'}`;
   state.innerText = leads.length
     ? (processing.computation_status ? titleCaseStatusClient(processing.computation_status) : 'Ready for processing')
-    : (data.review?.review_complete ? 'Waiting for computation' : 'Waiting for review handoff');
+    : (data.config?.approval_gate_enabled ? (data.review?.review_complete ? 'Waiting for computation' : 'Waiting for review handoff') : 'Waiting for prepared leads');
   path.innerText = processing.computation_file || 'Manual research state will be created when you save the first row';
   const alreadyBridged = Boolean(processing.bridged);
   bridgeButton.disabled = alreadyBridged || !processing.bridge_ready;
@@ -1375,14 +1416,14 @@ function renderLeadPrepDashboard(data) {
   const run = data.run || {};
   const archive = data.archive || {};
   const hasToday = Boolean(run.is_today);
-  const target = Number(hasToday ? run.fresh_target : config.base_volume || 50);
+  const target = Number(hasToday ? run.fresh_target : config.base_volume || 60);
   const fresh = Number(hasToday ? run.fresh_count : 0);
   const progress = target ? Math.min(100, Math.round((fresh / target) * 100)) : 0;
   const topUpsEnabled = config.fresh_volume_top_up_mode !== 'off';
   const review = data.review || {};
   initializeLeadReviewDraft(review);
   const historical = data.historical || {};
-  const reviewCopy = leadReviewStatusCopy(review);
+  const reviewCopy = leadReviewStatusCopy(review, Boolean(config.approval_gate_enabled));
 
   document.getElementById('leadReviewStatusTitle').innerText = reviewCopy.title;
   document.getElementById('leadReviewStatusDetail').innerText = reviewCopy.detail;
@@ -1440,7 +1481,8 @@ function renderLeadPrepDashboard(data) {
   const editing = Boolean(document.activeElement?.closest?.('.lead-settings-grid'));
   if (!editing) {
     document.getElementById('leadPrepTime').value = config.prep_time || '14:00';
-    document.getElementById('leadPrepVolume').value = config.base_volume || 50;
+    document.getElementById('leadPrepVolume').value = config.base_volume || 60;
+    document.getElementById('leadPrepApprovalGate').value = config.approval_gate_enabled ? 'enabled' : 'disabled';
     document.getElementById('leadPrepOverlapScanMode').value = config.overlap_scan_mode === 'off' ? 'off' : 'auto';
     document.getElementById('leadPrepTopUpMode').value = topUpsEnabled ? 'auto' : 'off';
   }
@@ -1508,6 +1550,7 @@ function readLeadPrepSettings(enabledOverride = null) {
       : enabledOverride,
     prep_time: document.getElementById('leadPrepTime').value,
     base_volume: Number(document.getElementById('leadPrepVolume').value),
+    approval_gate_enabled: document.getElementById('leadPrepApprovalGate').value === 'enabled',
     overlap_scan_mode: document.getElementById('leadPrepOverlapScanMode').value,
     fresh_volume_top_up_mode: document.getElementById('leadPrepTopUpMode').value
   };
@@ -1867,6 +1910,10 @@ if (closeAppBtn) {
   });
 }
 
+if (fullScreenBtn && isElectronRuntime) {
+  fullScreenBtn.addEventListener('click', () => ipcRenderer.send('toggle-fullscreen'));
+}
+
 // Helper to update a static task checkbox visual state
 function updateCheckmarkUI(cardId, isChecked) {
   const card = document.getElementById(cardId);
@@ -1937,6 +1984,12 @@ function renderOverviewWorkflow(stats) {
   }
 
   const priorities = [];
+  const watcherAlerts = Array.isArray(stats.watcher?.alerts) ? stats.watcher.alerts : [];
+  if (watcherAlerts.length) {
+    const alert = watcherAlerts[0];
+    const detail = String(alert.detail || alert.reason || 'A watcher checkpoint needs attention.').replaceAll('_', ' ');
+    priorities.push({ tone: 'danger', title: `${titleCaseStatusClient(alert.workflow || 'Watcher')} needs attention`, detail, page: alert.workflow === 'obf' ? 'obf' : (alert.workflow === 'lead_prep' ? 'lead-prep' : 'outreach') });
+  }
   const obfIssues = obf.issues || [];
   if (obfIssues.length) priorities.push({ tone: 'danger', title: `${obfIssues.length} OBF exception${obfIssues.length === 1 ? '' : 's'} need review`, detail: obfIssues[0].detail || obfIssues[0].title || 'Open OBF to resolve the exception.', page: 'obf' });
   if (prepared && approved < prepared) priorities.push({ tone: 'warning', title: `${prepared - approved} lead${prepared - approved === 1 ? '' : 's'} awaiting approval`, detail: `${approved} of ${prepared} prepared leads are approved.`, page: 'lead-prep' });
@@ -2066,14 +2119,14 @@ async function refreshStats() {
   if (watcherAlert) {
     watcherAlert.hidden = activeAlerts.length === 0;
     watcherAlert.innerText = activeAlerts.length
-      ? activeAlerts.map(alert => {
+      ? `${activeAlerts.slice(0, 3).map(alert => {
           const retryAt = alert.next_retry_at ? ` until ${new Date(alert.next_retry_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
-          const reason = String(alert.reason || 'checkpoint failed').replaceAll('_', ' ');
+          const reason = String(alert.detail || alert.reason || 'checkpoint failed').replaceAll('_', ' ');
           if (String(alert.reason || '').includes('quarantined_profile_issues')) {
             return `Activity queue: ${reason}`;
           }
           return `Watcher status: ${alert.workflow} — ${reason}${retryAt}`;
-        }).join(' · ')
+        }).join(' · ')}${activeAlerts.length > 3 ? ` · +${activeAlerts.length - 3} more` : ''}`
       : '';
   }
   renderOverviewWorkflow(stats);
@@ -2374,6 +2427,179 @@ clearConsoleBtn.addEventListener('click', () => {
   consoleLog.innerHTML = '<div class="system-message">Console log cleared.</div>';
 });
 
+function jobDiscoveryTone(status = '') {
+  const normalized = String(status).toLowerCase();
+  if (normalized.includes('fail') || normalized.includes('error')) return 'danger';
+  if (normalized.includes('running') || normalized.includes('pending')) return 'warning';
+  if (normalized.includes('complete') || normalized === 'active') return 'success';
+  return 'neutral';
+}
+
+function jobDiscoveryFact(label, value) {
+  return `<div><span>${escapeHtmlSafe(label)}</span><strong title="${escapeHtmlSafe(String(value ?? '—'))}">${escapeHtmlSafe(String(value ?? '—'))}</strong></div>`;
+}
+
+function renderJobDiscoveryDashboard(data) {
+  const config = data.config || {};
+  const status = data.status || {};
+  const counts = status.jobStatusCounts || {};
+  const recentRuns = Array.isArray(status.recentRuns) ? status.recentRuns : [];
+  const recent = recentRuns[0] || {};
+  const activeJobs = Number(counts.active || 0) + Number(counts.review || 0);
+  const reviewJobs = Number(counts.review || 0);
+  const runTitle = document.getElementById('jobDiscoveryStatusTitle');
+  const runDetail = document.getElementById('jobDiscoveryStatusDetail');
+  const pill = document.getElementById('jobDiscoveryStatusPill');
+  const feedback = document.getElementById('jobDiscoveryFeedback');
+  const phase = !data.available ? 'Unavailable' : data.is_running ? 'Running' : config.automationEnabled ? 'Ready for daily run' : 'Manual mode';
+  const detail = !data.available
+    ? (data.error || 'The service directory is unavailable.')
+    : data.error
+      ? `Status could not be read: ${data.error}`
+      : data.is_running
+        ? `Active run ${status.activeRunId || data.lock?.runId || ''} is checkpointing its progress locally.`
+        : config.automationEnabled
+          ? `Automation is enabled for ${config.dailyRunTime || status.dailyRunTime || 'the configured time'} ${config.timezone || status.timezone || ''}.`
+          : 'Automatic runs are disabled; use Run discovery now whenever you want to collect jobs.';
+  runTitle.innerText = phase;
+  runDetail.innerText = detail;
+  pill.className = `obf-status-pill ${!data.available || data.error ? 'danger' : data.is_running ? 'active' : config.automationEnabled ? 'success' : 'neutral'}`;
+  pill.innerText = phase;
+  document.getElementById('jobDiscoveryUpdated').innerText = data.last_updated ? `Updated ${formatObfTime(data.last_updated, true)}` : '—';
+  document.getElementById('jobDiscoveryJobsMetric').innerText = activeJobs;
+  document.getElementById('jobDiscoveryJobsDetail').innerText = `${Number(counts.active || 0)} active · ${reviewJobs} review`;
+  document.getElementById('jobDiscoveryReviewMetric').innerText = reviewJobs;
+  document.getElementById('jobDiscoveryHydratedMetric').innerText = Number(recent.hydrated || 0);
+  document.getElementById('jobDiscoveryHydratedDetail').innerText = recent.id ? `${titleCaseStatusClient(recent.status || 'recorded')} · ${recent.newJobs || 0} new` : 'no completed run yet';
+  document.getElementById('jobDiscoveryCursorMetric').innerText = Number(status.queryCursor || 0) + 1;
+  document.getElementById('jobDiscoveryCursorDetail').innerText = `${Number(status.enabledQueries || 0)} enabled queries`;
+  document.getElementById('jobDiscoveryHealthMetric').innerText = recent.status ? titleCaseStatusClient(recent.status) : '—';
+  document.getElementById('jobDiscoveryHealthDetail').innerText = recent.endedAt ? `Finished ${formatObfTime(recent.endedAt, true)}` : 'awaiting first run';
+
+  const toggle = document.getElementById('jobDiscoveryEnabledToggle');
+  toggle.setAttribute('aria-checked', String(Boolean(config.automationEnabled)));
+  toggle.disabled = !data.available;
+  document.getElementById('jobDiscoveryEnabledDetail').innerText = config.automationEnabled
+    ? `Enabled · runs daily at ${config.dailyRunTime || status.dailyRunTime || '—'}`
+    : 'Disabled · manual runs only';
+  const schedulerButton = document.getElementById('jobDiscoverySchedulerBtn');
+  schedulerButton.disabled = !data.available;
+  schedulerButton.innerText = data.scheduler_enabled ? 'Stop scheduler' : 'Start scheduler';
+  document.getElementById('jobDiscoverySchedulerState').innerText = data.scheduler_enabled ? 'Running as a local LaunchAgent' : 'Not running';
+  const editing = Boolean(document.activeElement?.closest?.('.job-discovery-settings-grid'));
+  if (!editing) {
+    document.getElementById('jobDiscoveryRunTime').value = config.dailyRunTime || status.dailyRunTime || '08:00';
+    document.getElementById('jobDiscoveryMaxQueries').value = config.maxQueriesPerRun || 180;
+    document.getElementById('jobDiscoveryMaxListings').value = config.maxListingsPerRun || 180;
+  }
+  document.getElementById('jobDiscoveryRunBtn').disabled = !data.available || Boolean(data.is_running);
+  document.getElementById('jobDiscoveryReverifyBtn').disabled = !data.available || Boolean(data.is_running);
+  document.getElementById('jobDiscoveryRefreshBtn').disabled = !data.available;
+  if (feedback && data.error) feedback.innerText = data.error;
+
+  document.getElementById('jobDiscoveryFacts').innerHTML = [
+    jobDiscoveryFact('Active run', status.activeRunId || data.lock?.runId || 'None'),
+    jobDiscoveryFact('Last scheduled day', status.lastScheduledDate || 'Not yet run'),
+    jobDiscoveryFact('Database', status.database?.databasePath || 'Not initialized'),
+    jobDiscoveryFact('Records', `${status.database?.jobs || 0} jobs · ${status.database?.companies || 0} companies`)
+  ].join('');
+  document.getElementById('jobDiscoveryDiagnostics').innerHTML = [
+    jobDiscoveryFact('Service root', data.root || '—'),
+    jobDiscoveryFact('Control source', status.controlSource || 'local'),
+    jobDiscoveryFact('Configuration', status.configurationSource || 'local'),
+    jobDiscoveryFact('Run lock', data.lock?.heartbeatAt || 'Clear')
+  ].join('');
+  const progressCounts = status.queryProgressCounts || {};
+  const progressEntries = Object.entries(progressCounts).sort(([left], [right]) => left.localeCompare(right));
+  document.getElementById('jobDiscoveryProgress').innerHTML = progressEntries.length
+    ? progressEntries.map(([state, count]) => `<div class="job-discovery-progress ${jobDiscoveryTone(state)}"><span>${escapeHtmlSafe(titleCaseStatusClient(state))}</span><strong>${Number(count)} queries</strong></div>`).join('')
+    : '<div class="empty-state">No query checkpoints have been recorded yet.</div>';
+  document.getElementById('jobDiscoveryHistoryBody').innerHTML = recentRuns.length
+    ? recentRuns.map(run => `<tr><td>${run.startedAt ? escapeHtmlSafe(formatObfTime(run.startedAt, true)) : '—'}</td><td>${escapeHtmlSafe(titleCaseStatusClient(run.trigger || 'manual'))}</td><td><span class="obf-status-pill ${jobDiscoveryTone(run.status)}">${escapeHtmlSafe(titleCaseStatusClient(run.status || 'unknown'))}</span></td><td>${Number(run.queriesCompleted || 0)} / ${Number(run.queriesAttempted || 0)}</td><td>${Number(run.hydrated || 0)}</td><td>${Number(run.newJobs || 0)}</td><td>${escapeHtmlSafe(run.stopReason || run.errors?.[0] || '—')}</td></tr>`).join('')
+    : '<tr><td colspan="7"><div class="empty-state">No discovery runs have been recorded yet.</div></td></tr>';
+}
+
+async function refreshJobDiscoveryDashboard() {
+  try {
+    const data = await ipcRenderer.invoke('read-job-discovery-dashboard');
+    if (data) renderJobDiscoveryDashboard(data);
+  } catch (error) {
+    const feedback = document.getElementById('jobDiscoveryFeedback');
+    if (feedback) feedback.innerText = `Could not refresh Job Discovery: ${error.message}`;
+  }
+}
+
+function readJobDiscoverySettings(enabledOverride = null) {
+  const toggle = document.getElementById('jobDiscoveryEnabledToggle');
+  return {
+    automationEnabled: enabledOverride === null ? toggle.getAttribute('aria-checked') === 'true' : enabledOverride,
+    dailyRunTime: document.getElementById('jobDiscoveryRunTime').value,
+    maxQueriesPerRun: Number(document.getElementById('jobDiscoveryMaxQueries').value),
+    maxListingsPerRun: Number(document.getElementById('jobDiscoveryMaxListings').value)
+  };
+}
+
+async function saveJobDiscoverySettings(enabledOverride = null) {
+  const settings = readJobDiscoverySettings(enabledOverride);
+  if (!settings.dailyRunTime || settings.maxQueriesPerRun < 1 || settings.maxListingsPerRun < 1) {
+    appendToConsole('Set a valid daily time and positive limits for Job Discovery.', 'error');
+    return false;
+  }
+  const result = await ipcRenderer.invoke('save-job-discovery-settings', settings);
+  if (!result?.ok) {
+    appendToConsole(result?.error || 'Could not save Job Discovery settings.', 'error');
+    await refreshJobDiscoveryDashboard();
+    return false;
+  }
+  document.getElementById('jobDiscoveryFeedback').innerText = 'Runtime controls saved locally.';
+  appendToConsole('Job Discovery runtime controls saved.', 'success');
+  await refreshJobDiscoveryDashboard();
+  return true;
+}
+
+async function startJobDiscoveryAction(action, button) {
+  if (!isElectronRuntime) {
+    const channel = action === 'run' ? 'start-job-discovery-run' : 'start-job-discovery-reverify';
+    const result = await ipcRenderer.invoke(channel, {});
+    appendToConsole(result?.ok ? `Job Discovery ${action} started in the background.` : (result?.error || 'Could not start Job Discovery.'), result?.ok ? 'success' : 'error');
+    await refreshJobDiscoveryDashboard();
+    return;
+  }
+  if (currentRunningTaskElement) {
+    appendToConsole('Please wait or cancel the active running process before starting Job Discovery.', 'error');
+    return;
+  }
+  currentRunningTaskElement = button;
+  currentCategory = 'job-discovery';
+  startStopwatch(currentCategory);
+  consoleStatusIndicator.className = 'status-indicator running';
+  consoleStatusText.innerText = `Running Job Discovery: ${action}`;
+  stopProcessBtn.style.display = 'block';
+  appendToConsole(`>>> Launching Daily Job Discovery: ${action}`, 'system');
+  ipcRenderer.send('run-job-discovery-command', { action });
+  await refreshJobDiscoveryDashboard();
+}
+
+document.getElementById('jobDiscoveryRefreshBtn')?.addEventListener('click', refreshJobDiscoveryDashboard);
+document.getElementById('jobDiscoverySaveBtn')?.addEventListener('click', () => saveJobDiscoverySettings());
+document.getElementById('jobDiscoveryEnabledToggle')?.addEventListener('click', event => saveJobDiscoverySettings(event.currentTarget.getAttribute('aria-checked') !== 'true'));
+document.getElementById('jobDiscoverySchedulerBtn')?.addEventListener('click', async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const enabled = button.innerText === 'Start scheduler';
+    const result = await ipcRenderer.invoke('toggle-job-discovery-scheduler', { enabled });
+    if (!result?.ok) throw new Error(result?.error || 'Scheduler service could not be changed.');
+    appendToConsole(`Job Discovery scheduler ${result.enabled ? 'started' : 'stopped'}.`, 'success');
+  } catch (error) {
+    appendToConsole(error.message, 'error');
+  } finally {
+    await refreshJobDiscoveryDashboard();
+  }
+});
+document.getElementById('jobDiscoveryRunBtn')?.addEventListener('click', event => startJobDiscoveryAction('run', event.currentTarget));
+document.getElementById('jobDiscoveryReverifyBtn')?.addEventListener('click', event => startJobDiscoveryAction('reverify', event.currentTarget));
+
 // Run command execution trigger helper
 function triggerTaskExecution(scriptPath, args, buttonEl) {
   if (currentRunningTaskElement) {
@@ -2435,7 +2661,7 @@ document.getElementById('obfExecBtn')?.addEventListener('click', event => {
 });
 
 document.getElementById('leadPrepRunBtn')?.addEventListener('click', event => {
-  const volume = Math.max(1, Number(document.getElementById('leadPrepVolume')?.value || 50));
+  const volume = Math.max(1, Number(document.getElementById('leadPrepVolume')?.value || 60));
   const mode = document.getElementById('leadPrepOverlapScanMode')?.value || 'auto';
   const topUpMode = document.getElementById('leadPrepTopUpMode')?.value || 'auto';
   const args = ['prepare-review', '--limit', String(volume)];
@@ -2590,6 +2816,11 @@ ipcRenderer.on('command-output', (event, data) => {
   appendToConsole(data);
 });
 
+ipcRenderer.on('command-error', (event, message) => {
+  appendToConsole(`>>> ${message}`, 'error');
+  if (currentRunningTaskElement) finishRunningTask(1);
+});
+
 // Handle Command Terminations
 function finishRunningTask(code) {
   if (!currentRunningTaskElement) return;
@@ -2609,6 +2840,7 @@ function finishRunningTask(code) {
     refreshStats();
     if (category === 'obf') refreshObfDashboard();
     if (category === 'lead-prep') refreshLeadPrepDashboard();
+    if (category === 'job-discovery') refreshJobDiscoveryDashboard();
   } else {
     stopStopwatch(category, 'Error');
     consoleStatusIndicator.className = 'status-indicator error';
@@ -2619,6 +2851,7 @@ function finishRunningTask(code) {
     refreshStats();
     if (category === 'obf') refreshObfDashboard();
     if (category === 'lead-prep') refreshLeadPrepDashboard();
+    if (category === 'job-discovery') refreshJobDiscoveryDashboard();
   }
 
   stopProcessBtn.style.display = 'none';
@@ -2663,6 +2896,12 @@ ipcRenderer.on('slide-out', () => {
 
 ipcRenderer.on('refresh-data', () => {
   refreshStats();
+});
+
+ipcRenderer.on('fullscreen-changed', (_event, isFullScreen) => {
+  if (!fullScreenBtn) return;
+  fullScreenBtn.title = isFullScreen ? 'Exit full screen' : 'Enter full screen';
+  fullScreenBtn.setAttribute('aria-label', fullScreenBtn.title);
 });
 
 // Caffeinate UI Logic variables
@@ -2738,6 +2977,153 @@ ipcRenderer.on('caffeinate-stopped', () => {
   clearCaffeineTimer();
 });
 
+let postEngagementDashboard = null;
+
+function peEmptyRow(columns, message) {
+  return `<tr><td colspan="${columns}"><div class="empty-state">${escapeHtmlSafe(message)}</div></td></tr>`;
+}
+
+function peProfileLink(candidate) {
+  const name = escapeHtmlSafe(candidate.name || candidate.profile_url || 'Unknown profile');
+  return candidate.profile_url ? `<a href="${escapeHtmlSafe(candidate.profile_url)}" target="_blank" rel="noreferrer">${name}</a>` : name;
+}
+
+function renderPostEngagement(data) {
+  postEngagementDashboard = data;
+  const campaign = data.campaign || {};
+  const config = data.config || {};
+  const candidates = campaign.candidates || [];
+  const sources = campaign.sources || [];
+  const status = String(campaign.status || 'waiting_for_source');
+  const needsSource = status === 'needs_another_post' || status === 'dry_run_needs_another_post';
+  document.getElementById('peStatusTitle').innerText = needsSource ? 'Another source post is needed' : titleCaseStatusClient(status);
+  document.getElementById('peStatusDetail').innerText = needsSource
+    ? `${campaign.engagement_deficit || 0} engagement and ${campaign.connection_deficit || 0} connection slots remain.`
+    : data.error || `Current stage: ${titleCaseStatusClient(campaign.stage || 'source_posts')} · ${titleCaseStatusClient(campaign.cdp_account || config.cdp_account || 'design')} CDP lane.`;
+  const pill = document.getElementById('peStatusPill');
+  pill.innerText = data.is_running ? 'Running' : needsSource ? 'Needs post' : titleCaseStatusClient(status);
+  pill.className = `obf-status-pill ${data.is_running ? 'active' : needsSource ? 'warning' : status === 'completed' ? 'success' : 'neutral'}`;
+  document.getElementById('peEngagedValue').innerText = `${campaign.engaged || 0} / ${campaign.target || '—'}`;
+  document.getElementById('peEngagedDetail').innerText = campaign.preview_engaged && !campaign.engaged ? `${campaign.preview_engaged} would be engaged in a live run` : campaign.engagement_deficit ? `${campaign.engagement_deficit} more active profiles needed` : 'unique profiles with at least one new Like';
+  const batches = campaign.engagement_batches || [];
+  const currentBatchNumber = Number(campaign.current_batch_number || 0);
+  const activeBatch = batches.find(batch => Number(batch.number) === currentBatchNumber) || batches.find(batch => batch.status !== 'completed');
+  document.getElementById('peBatchValue').innerText = activeBatch ? `Batch ${activeBatch.number} / ${batches.length}` : (batches.length ? `${batches.length} complete` : '—');
+  const nextBatchAt = campaign.next_batch_at ? new Date(campaign.next_batch_at) : null;
+  document.getElementById('peBatchDetail').innerText = status === 'waiting_next_batch' && nextBatchAt && !Number.isNaN(nextBatchAt.valueOf())
+    ? `next window ${nextBatchAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    : activeBatch ? `${activeBatch.engaged || 0} / ${activeBatch.target || 0} engagements in this window` : 'three paced windows per live campaign';
+  document.getElementById('peConnectionsValue').innerText = `${campaign.connections_sent || 0} / ${campaign.connection_target ?? config.connection_target ?? 10}`;
+  document.getElementById('peCandidatesValue').innerText = String(candidates.length);
+  const bestCoverage = sources.reduce((best, source) => Math.max(best, Number(source.coverage || 0)), 0);
+  document.getElementById('peCoverageDetail').innerText = sources.length ? `${Math.round(bestCoverage * 100)}% best source extraction coverage` : 'no source extracted';
+  document.getElementById('peHighSignalValue').innerText = `${campaign.followed || 0} / ${campaign.follow_target ?? config.follow_target ?? 10}`;
+  const pauseButton = document.getElementById('pePauseBtn');
+  const resumeButton = document.getElementById('peResumeBtn');
+  if (pauseButton) pauseButton.disabled = !data.is_running;
+  if (resumeButton) {
+    resumeButton.disabled = data.is_running || !['paused', 'pause_requested', 'failed'].includes(status);
+    resumeButton.innerText = status === 'failed' ? 'Retry from checkpoint' : 'Resume';
+  }
+
+  document.getElementById('peSourceList').innerHTML = sources.length ? sources.map(source => `<div class="pe-source-row"><a href="${escapeHtmlSafe(source.resolved_url || source.submitted_url)}" target="_blank" rel="noreferrer">${escapeHtmlSafe(source.resolved_url || source.submitted_url)}</a><span>${source.profiles_collected || 0} / ${source.reaction_count || '—'}</span><span class="obf-status-pill ${source.status === 'collected' ? 'success' : source.status === 'failed' ? 'warning' : 'neutral'}">${escapeHtmlSafe(titleCaseStatusClient(source.status))}</span></div>`).join('') : '<div class="empty-state">No source posts added today.</div>';
+
+  document.getElementById('peAuditBody').innerHTML = candidates.length ? candidates.map(candidate => `<tr><td>${peProfileLink(candidate)}</td><td>${escapeHtmlSafe(candidate.location || '—')}</td><td>${candidate.follower_count ?? '—'}</td><td>${(candidate.posts || []).length}</td><td>${escapeHtmlSafe(candidate.very_active ? 'Very active' : candidate.activity_counts ? 'Below threshold' : 'Not measured')}</td><td>${escapeHtmlSafe(titleCaseStatusClient(candidate.status))}</td></tr>`).join('') : peEmptyRow(6, 'Candidates appear after source extraction.');
+  const engaged = candidates.filter(candidate => candidate.likes_assigned || candidate.likes_completed || candidate.likes_preview);
+  document.getElementById('peEngagementBody').innerHTML = engaged.length ? engaged.map(candidate => { const diversion = candidate.obf_diversion ? `${titleCaseStatusClient(candidate.obf_diversion)}${candidate.obf_diversion_seconds ? ` · ${candidate.obf_diversion_seconds}s` : ''}` : 'Pending plan'; const diversionResult = candidate.diversion_result; const diversionLabel = diversionResult?.error ? `${diversion} · retry-safe` : diversion; return `<tr><td>${peProfileLink(candidate)}</td><td>${candidate.likes_assigned || 0}</td><td>${candidate.likes_completed || 0}${candidate.likes_preview ? ` <small>(${candidate.likes_preview} preview)</small>` : ''}</td><td>${candidate.newest_post_age_hours == null ? '—' : `${candidate.newest_post_age_hours}h`}</td><td>${escapeHtmlSafe(diversionLabel)}</td><td>${escapeHtmlSafe(titleCaseStatusClient(candidate.status))}</td></tr>`; }).join('') : peEmptyRow(6, 'No like assignments recorded yet.');
+  const ranked = candidates.filter(candidate => candidate.recommendation || candidate.activity_counts || candidate.connection_result || candidate.follow_result || candidate.connection_preview || candidate.follow_preview);
+  document.getElementById('peConnectionsBody').innerHTML = ranked.length ? ranked.map(candidate => { const counts = candidate.activity_counts || {}; const decision = candidate.follow_result || candidate.follow_preview || candidate.connection_result?.status || candidate.connection_preview?.status || candidate.recommendation?.action || (candidate.very_active ? 'Ranked candidate' : 'Not eligible'); return `<tr><td>${peProfileLink(candidate)}</td><td>Tier ${candidate.geography_tier || 4} · ${escapeHtmlSafe(candidate.region || 'Unknown')}</td><td>${counts.reactions || 0} likes · ${counts.comments || 0} comments · ${counts.posts || 0} posts</td><td>${candidate.follower_count ?? '—'}</td><td>${escapeHtmlSafe(titleCaseStatusClient(decision))}</td></tr>`; }).join('') : peEmptyRow(5, 'Recommendations are saved immediately after each successful engagement.');
+  const history = data.history || [];
+  document.getElementById('peHistoryBody').innerHTML = history.length ? history.map(row => `<tr><td>${escapeHtmlSafe(row.day)}</td><td>${escapeHtmlSafe(titleCaseStatusClient(row.status))}</td><td>${row.engaged || 0} / ${row.target || 0}</td><td>${row.connections_sent || 0}</td><td>${row.followed || 0}</td><td>${row.dry_run ? 'Audit' : 'Live'}</td></tr>`).join('') : peEmptyRow(6, 'No completed campaign runs yet.');
+
+  document.getElementById('peCdpAccount').value = config.cdp_account || 'design';
+  // The operational test discussed for the first source uses Automation;
+  // once a source is added, the campaign's own persisted lane always wins.
+  document.getElementById('peSourceCdpAccount').value = campaign.cdp_account || (sources.length ? config.cdp_account : 'automation') || 'automation';
+  document.getElementById('peMinTarget').value = config.engagement_min ?? 45;
+  document.getElementById('peMaxTarget').value = config.engagement_max ?? 60;
+  document.getElementById('peConnectionTarget').value = config.connection_target ?? 10;
+  document.getElementById('peFollowTarget').value = config.follow_target ?? 10;
+  document.getElementById('peFollowerLimit').value = config.follower_connection_limit ?? 5000;
+  document.getElementById('peCoverage').value = config.reactor_min_coverage ?? 0.9;
+  document.getElementById('peBatchCount').value = config.engagement_batch_count ?? 3;
+  document.getElementById('peBatchDelay').value = config.inter_batch_delay_minutes ?? 90;
+}
+
+async function refreshPostEngagementDashboard() {
+  try {
+    renderPostEngagement(await ipcRenderer.invoke('read-post-engagement-dashboard', {}));
+  } catch (error) {
+    appendToConsole(`>>> Post Engagement state failed to load: ${error.message}`, 'error');
+  }
+}
+
+document.querySelectorAll('[data-pe-tab]').forEach(tab => tab.addEventListener('click', () => {
+  document.querySelectorAll('[data-pe-tab]').forEach(item => item.classList.toggle('active', item === tab));
+  document.querySelectorAll('[data-pe-panel]').forEach(panel => panel.classList.toggle('active', panel.dataset.pePanel === tab.dataset.peTab));
+}));
+
+document.getElementById('peAddSourceBtn')?.addEventListener('click', async () => {
+  const input = document.getElementById('peSourceUrl');
+  const url = input.value.trim();
+  if (!url) return;
+  const cdpAccount = document.getElementById('peSourceCdpAccount').value;
+  const result = await ipcRenderer.invoke('add-post-engagement-source', { url, cdp_account: cdpAccount });
+  if (result?.ok === false) appendToConsole(`>>> Could not add source: ${result.error}`, 'error');
+  else { input.value = ''; await refreshPostEngagementDashboard(); }
+});
+
+document.getElementById('peArchiveFreshBtn')?.addEventListener('click', async () => {
+  if (!window.confirm('Archive this campaign and create a fresh run for today? Completed actions stay in the daily deduplication ledger.')) return;
+  const result = await ipcRenderer.invoke('archive-post-engagement-and-fresh', {});
+  appendToConsole(result?.ok ? '>>> Campaign archived. Fresh same-day engagement run created; final send capacity remains shared for the day.' : `>>> Could not start fresh: ${result?.error}`, result?.ok ? 'system' : 'error');
+  await refreshPostEngagementDashboard();
+});
+
+document.getElementById('peSaveSettingsBtn')?.addEventListener('click', async () => {
+  const payload = {
+    cdp_account: document.getElementById('peCdpAccount').value,
+    engagement_min: Number(document.getElementById('peMinTarget').value),
+    engagement_max: Number(document.getElementById('peMaxTarget').value),
+    connection_target: Number(document.getElementById('peConnectionTarget').value),
+    follow_target: Number(document.getElementById('peFollowTarget').value),
+    follower_connection_limit: Number(document.getElementById('peFollowerLimit').value),
+    reactor_min_coverage: Number(document.getElementById('peCoverage').value),
+    engagement_batch_count: Number(document.getElementById('peBatchCount').value),
+    inter_batch_delay_minutes: Number(document.getElementById('peBatchDelay').value)
+  };
+  const result = await ipcRenderer.invoke('save-post-engagement-settings', payload);
+  appendToConsole(result?.ok === false ? `>>> Settings failed: ${result.error}` : '>>> Post Engagement settings saved.', result?.ok === false ? 'error' : 'success');
+  await refreshPostEngagementDashboard();
+});
+
+document.getElementById('peDryRunBtn')?.addEventListener('click', async () => {
+  const result = await ipcRenderer.invoke('start-post-engagement-dry-run', {});
+  appendToConsole(result?.ok ? '>>> Post Engagement audit started in its dedicated tab.' : `>>> Audit did not start: ${result?.error}`, result?.ok ? 'system' : 'error');
+  await refreshPostEngagementDashboard();
+});
+
+document.getElementById('peRunBtn')?.addEventListener('click', async () => {
+  if (!window.confirm('Launch real LinkedIn Likes, follows, and connection requests for this campaign?')) return;
+  const result = await ipcRenderer.invoke('start-post-engagement-run', {});
+  appendToConsole(result?.ok ? '>>> Live Post Engagement workflow started.' : `>>> Workflow did not start: ${result?.error}`, result?.ok ? 'system' : 'error');
+  await refreshPostEngagementDashboard();
+});
+
+document.getElementById('pePauseBtn')?.addEventListener('click', async () => {
+  const result = await ipcRenderer.invoke('pause-post-engagement-run', {});
+  appendToConsole(result?.ok ? '>>> Safe pause requested. The current browser step will finish, then the campaign will pause.' : `>>> Pause failed: ${result?.error}`, result?.ok ? 'system' : 'error');
+  await refreshPostEngagementDashboard();
+});
+
+document.getElementById('peResumeBtn')?.addEventListener('click', async () => {
+  const result = await ipcRenderer.invoke('resume-post-engagement-run', {});
+  appendToConsole(result?.ok ? '>>> Post Engagement resumed from its saved checkpoint.' : `>>> Resume failed: ${result?.error}`, result?.ok ? 'system' : 'error');
+  await refreshPostEngagementDashboard();
+});
+
+ipcRenderer.on('post-engagement-updated', refreshPostEngagementDashboard);
+
 launchChromeBtn.addEventListener('click', () => {
   appendToConsole('>>> Launching Chrome Automation Profile...', 'system');
   ipcRenderer.send('launch-chrome', 'cdp1');
@@ -2796,6 +3182,8 @@ window.addEventListener('DOMContentLoaded', () => {
   refreshStats();
   refreshObfDashboard();
   refreshLeadPrepDashboard();
+  refreshJobDiscoveryDashboard();
+  refreshPostEngagementDashboard();
   syncWatcherState();
   setInterval(syncWatcherState, 5000); // Check watcher status every 5s
   setInterval(() => {
@@ -2804,6 +3192,8 @@ window.addEventListener('DOMContentLoaded', () => {
       const activePage = document.querySelector('.page-view.active');
       if (activePage?.dataset.page === 'obf') refreshObfDashboard();
       if (activePage?.dataset.page === 'lead-prep') refreshLeadPrepDashboard();
+      if (activePage?.dataset.page === 'job-discovery') refreshJobDiscoveryDashboard();
+      if (activePage?.dataset.page === 'post-engagement') refreshPostEngagementDashboard();
     }
   }, 5000);
 });

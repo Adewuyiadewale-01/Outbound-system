@@ -178,7 +178,10 @@ def run_lane(day: str, prepared: Path, worker: Dict[str, Any], args: argparse.Na
     return {
         "worker_id": worker["id"], "primary_lane": worker["primary_lane"], "cdp_port": worker["cdp_port"],
         "started_at": started_at, "completed_at": datetime.now().isoformat(timespec="seconds"),
-        "command": command, "ok": process.returncode == 0 and bool(summary), "returncode": process.returncode,
+        "command": command, "ok": process.returncode == 0 and summary.get("ok") is True, "returncode": process.returncode,
+        **({"termination_signal": signal.Signals(-process.returncode).name,
+            "interrupted": True, "termination_source": "unknown_external_signal",
+            "worker_pid": process.pid} if process.returncode < 0 else {}),
         "summary": summary, "stdout_tail": stdout[-4000:], "stderr_tail": stderr[-4000:],
     }
 

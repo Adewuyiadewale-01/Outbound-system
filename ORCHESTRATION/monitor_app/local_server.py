@@ -25,12 +25,37 @@ PROJECT_DIR = APP_DIR.parents[1]
 STATE_DIR = PROJECT_DIR / "state"
 SCRIPTS_DIR = PROJECT_DIR / "scripts"
 HELPERS_DIR = PROJECT_DIR / "helpers"
+JOB_DISCOVERY_DIR = Path(
+    os.environ.get(
+        "DAILY_JOB_DISCOVERY_ROOT",
+        str(Path.home() / "Documents" / "Automation Journey" / "daily-job-discovery"),
+    )
+).expanduser()
+JOB_DISCOVERY_CONFIG_PATH = JOB_DISCOVERY_DIR / "config" / "runtime.json"
+JOB_DISCOVERY_LOCK_PATH = JOB_DISCOVERY_DIR / "data" / "state.sqlite.lock"
+JOB_DISCOVERY_SCHEDULER_LABEL = "com.fulltime-job.daily-job-discovery"
 sys.path.insert(0, str(SCRIPTS_DIR))
 sys.path.insert(0, str(HELPERS_DIR))
 
 from runtime_environment import load_repo_env
+from post_engagement import (
+    add_source as add_post_engagement_source,
+    archive_and_start_fresh as archive_post_engagement_campaign,
+    dashboard as read_post_engagement_dashboard,
+    pause_campaign as pause_post_engagement_campaign,
+    resume_campaign as resume_post_engagement_campaign,
+    save_config as save_post_engagement_config,
+)
 
 load_repo_env()
+
+# Runtime environment loading also reads the root .env, so resolve this optional
+# integration path again after it has been applied.
+JOB_DISCOVERY_DIR = Path(
+    os.environ.get("DAILY_JOB_DISCOVERY_ROOT", str(JOB_DISCOVERY_DIR))
+).expanduser()
+JOB_DISCOVERY_CONFIG_PATH = JOB_DISCOVERY_DIR / "config" / "runtime.json"
+JOB_DISCOVERY_LOCK_PATH = JOB_DISCOVERY_DIR / "data" / "state.sqlite.lock"
 
 LEAD_PREP_CONFIG_PATH = STATE_DIR / "lead_prep_orchestration_config.json"
 LEAD_PREP_ARCHIVE_PATH = STATE_DIR / "lead_exec_research" / "research_archive" / "index.json"
@@ -49,7 +74,7 @@ OBF_CONFIG_DEFAULTS = {
     "prep_time": "08:25",
     "exec_time": "08:30",
     "max_sends": 30,
-    "daily_volume": 20,
+    "daily_volume": 30,
     "prospects_start_row": None,
     "timezone": "Africa/Lagos",
 }
@@ -87,13 +112,16 @@ OBF_RUN_LOCK = threading.Lock()
 OBF_ACTIVE_PROCESS: Optional[subprocess.Popen] = None
 WITHDRAWAL_RUN_LOCK = threading.Lock()
 WITHDRAWAL_ACTIVE_PROCESS: Optional[subprocess.Popen] = None
+POST_ENGAGEMENT_ACTIVE_PROCESS: Optional[subprocess.Popen] = None
 
 LEAD_PREP_CONFIG_DEFAULTS = {
     "autonomous_prep_enabled": False,
     "prep_time": "14:00",
     "first_review_deadline": "18:00",
     "fallback_review_deadline": "22:00",
-    "base_volume": 100,
+    "base_volume": 60,
+    "processing_batch_size": 30,
+    "approval_gate_enabled": False,
     "overlap_scan_mode": "auto",
     "fresh_volume_top_up_mode": "auto",
     "dashboard_date_override": "",
@@ -105,6 +133,137 @@ def read_json(path: Path, fallback: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else fallback
     except (OSError, json.JSONDecodeError):
         return fallback
+
+
+def job_discovery_available() -> bool:
+    return (
+        (JOB_DISCOVERY_DIR / "src" / "cli.mjs").is_file()
+        and JOB_DISCOVERY_CONFIG_PATH.is_file()
+        and (JOB_DISCOVERY_DIR / "package.json").is_file()
+    )
+
+
+def job_discovery_scheduler_enabled() -> bool:
+    if sys.platform != "darwin":
+        return False
+    result = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/{JOB_DISCOVERY_SCHEDULER_LABEL}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def run_job_discovery_node(*args: str, timeout: int = 30) -> Dict[str, Any]:
+    if not job_discovery_available():
+        return {
+            "ok": False,
+            "stdout": "",
+            "stderr": f"Daily Job Discovery was not found at {JOB_DISCOVERY_DIR}.",
+        }
+    try:
+        completed = subprocess.run(
+            ["node", *args],
+            cwd=JOB_DISCOVERY_DIR,
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return {
+            "ok": completed.returncode == 0,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "code": completed.returncode,
+        }
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"ok": False, "stdout": "", "stderr": str(error), "code": -1}
+
+
+def read_job_discovery_dashboard() -> Dict[str, Any]:
+    config = read_json(JOB_DISCOVERY_CONFIG_PATH, {})
+    lock = read_json(JOB_DISCOVERY_LOCK_PATH, None)
+    if not job_discovery_available():
+        return {
+            "available": False,
+            "root": str(JOB_DISCOVERY_DIR),
+            "error": f"Daily Job Discovery was not found at {JOB_DISCOVERY_DIR}. Set DAILY_JOB_DISCOVERY_ROOT to use a different location.",
+            "config": config,
+            "scheduler_enabled": False,
+            "is_running": False,
+            "status": {},
+        }
+    result = run_job_discovery_node("src/cli.mjs", "status")
+    try:
+        status = json.loads(result["stdout"] or "{}")
+    except json.JSONDecodeError:
+        status = {}
+    error = "" if result["ok"] else (result["stderr"] or result["stdout"] or "Status command failed.").strip()
+    return {
+        "available": True,
+        "root": str(JOB_DISCOVERY_DIR),
+        "config": config,
+        "scheduler_enabled": job_discovery_scheduler_enabled(),
+        "is_running": bool(status.get("activeRunId") or (lock or {}).get("runId")),
+        "active_action": "scheduled run" if status.get("activeRunId") else "",
+        "lock": lock,
+        "status": status,
+        "error": error,
+        "last_updated": local_now().isoformat(),
+    }
+
+
+def save_job_discovery_settings(requested: Dict[str, Any]) -> Dict[str, Any]:
+    if not job_discovery_available():
+        return {"ok": False, "error": f"Daily Job Discovery was not found at {JOB_DISCOVERY_DIR}."}
+    current = read_json(JOB_DISCOVERY_CONFIG_PATH, {})
+    daily_run_time = str(requested.get("dailyRunTime") or current.get("dailyRunTime") or "").strip()
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", daily_run_time):
+        return {"ok": False, "error": "Daily run time must use 24-hour HH:MM format."}
+    def bounded(value: Any, fallback: Any, maximum: int) -> int:
+        try:
+            return max(1, min(maximum, int(value)))
+        except (TypeError, ValueError):
+            return max(1, min(maximum, int(fallback or 1)))
+    next_config = {
+        **current,
+        "automationEnabled": bool(requested.get("automationEnabled")),
+        "dailyRunTime": daily_run_time,
+        "maxQueriesPerRun": bounded(requested.get("maxQueriesPerRun"), current.get("maxQueriesPerRun", 180), 500),
+        "maxListingsPerRun": bounded(requested.get("maxListingsPerRun"), current.get("maxListingsPerRun", 180), 1000),
+    }
+    write_json(JOB_DISCOVERY_CONFIG_PATH, next_config)
+    return {"ok": True, "config": next_config}
+
+
+def toggle_job_discovery_scheduler(requested: Dict[str, Any]) -> Dict[str, Any]:
+    if not job_discovery_available():
+        return {"ok": False, "error": f"Daily Job Discovery was not found at {JOB_DISCOVERY_DIR}."}
+    script = "scripts/install-launchd.mjs" if bool(requested.get("enabled")) else "scripts/uninstall-launchd.mjs"
+    result = run_job_discovery_node(script)
+    if not result["ok"]:
+        return {"ok": False, "error": (result["stderr"] or result["stdout"] or "Unable to change scheduler service.").strip()}
+    return {"ok": True, "enabled": job_discovery_scheduler_enabled()}
+
+
+def start_job_discovery_action(action: str) -> Dict[str, Any]:
+    if action not in {"run", "reverify"}:
+        raise ValueError("Unsupported Daily Job Discovery action.")
+    if not job_discovery_available():
+        return {"ok": False, "error": f"Daily Job Discovery was not found at {JOB_DISCOVERY_DIR}."}
+    if read_json(JOB_DISCOVERY_LOCK_PATH, None):
+        return {"ok": False, "error": "A Daily Job Discovery run is already active."}
+    subprocess.Popen(
+        ["node", "src/cli.mjs", action],
+        cwd=JOB_DISCOVERY_DIR,
+        env=os.environ.copy(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {"ok": True, "action": action}
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -1235,22 +1394,21 @@ def read_lead_prep_dashboard() -> Dict[str, Any]:
     }
     activity = read_activity_dashboard(today)
     activity_lead_ids = set(activity["lead_ids"])
-    if not cached_today.get("review_complete"):
-        processing_source = []
-        selection_mode = "waiting_for_review_handoff"
-    elif computation_by_lead_id:
+    approval_gate_enabled = bool(config.get("approval_gate_enabled"))
+    if computation_by_lead_id:
         processing_source = [
             lead for lead in prepared_leads if str(lead.get("run_id") or "") in computation_by_lead_id
         ]
         selection_mode = "computation_state"
-    elif approved_review_leads:
+    elif not approval_gate_enabled:
+        processing_source = prepared_leads
+        selection_mode = "approval_disabled"
+    elif cached_today.get("review_complete"):
         processing_source = approved_review_leads
         selection_mode = "approved_only"
     else:
-        processing_source = [
-            lead for lead in prepared_leads if lead.get("overlap_status") == "Fresh"
-        ]
-        selection_mode = "fallback_all_fresh"
+        processing_source = []
+        selection_mode = "waiting_for_review_handoff"
     processing_leads = []
     for lead in processing_source:
         if str(lead.get("run_id") or "") in activity_lead_ids:
@@ -1321,7 +1479,7 @@ def read_lead_prep_dashboard() -> Dict[str, Any]:
     )
     prepare_checkpoint = checkpoints.get("lead_prep_prepare", {})
     latest_run_is_today = run_matches_day(run, today)
-    fresh_target = int(overlap_scan.get("fresh_target") or config.get("base_volume", 50))
+    fresh_target = int(overlap_scan.get("fresh_target") or config.get("base_volume", 60))
     fresh_count = int(
         overlap_scan["fresh_count"]
         if "fresh_count" in overlap_scan
@@ -1546,13 +1704,21 @@ def dashboard_stats(requested: Dict[str, Any]) -> Dict[str, Any]:
     watcher = read_json(WATCHER_STATE_PATH, {})
     watcher_completion = {"tracked_days": 0, "completed_days": 0, "completion_rate": 0}
     terminal_statuses = {"completed", "failed_terminal", "cutoff_skipped", "needs_attention", "paused_manual_stop"}
+    # This endpoint powers the live overview. Keep historical alerts in watcher
+    # state/history, but only surface alerts belonging to the selected day here.
     watcher_completion["alerts"] = [
-        item for item in watcher.get("alerts", []) if not item.get("acknowledged")
+        item for item in watcher.get("alerts", [])
+        if not item.get("acknowledged")
+        and (
+            item.get("day") == today
+            or str(item.get("created_at") or "").startswith(today)
+        )
     ]
     for queue_path in sorted((STATE_DIR / "prefinal_queue").glob("*.json")):
         queue = read_json(queue_path, {})
         issue_count = len(queue.get("activity_issues") or {})
-        if issue_count and queue.get("status") not in {"prospects_bridged", "final_bridged"}:
+        queue_day = str(queue.get("updated_at") or queue.get("prepared_at") or queue.get("created_at") or "")[:10]
+        if queue_day == today and issue_count and queue.get("status") not in {"prospects_bridged", "final_bridged"}:
             watcher_completion["alerts"].append({
                 "workflow": "activity",
                 "reason": f"{issue_count}_quarantined_profile_issues",
@@ -1575,6 +1741,36 @@ def dashboard_stats(requested: Dict[str, Any]) -> Dict[str, Any]:
                             "next_retry_at": checkpoint.get("next_retry_at"),
                             "severity": "info",
                         })
+                    if checkpoint.get("status") in {"failed_terminal", "needs_attention", "interrupted_terminal"}:
+                        commands = (checkpoint.get("result") or {}).get("commands") or []
+                        output = "\n".join(
+                            f"{command.get('stdout_tail') or ''}\n{command.get('stderr_tail') or ''}"
+                            for command in commands
+                        )
+                        blocked = re.search(r"Blocked:\s*([^\n]+)", output, re.IGNORECASE)
+                        detail = (
+                            blocked.group(1).strip()
+                            if blocked
+                            else str(checkpoint.get("reason") or checkpoint.get("status") or "checkpoint failed").replace("_", " ")
+                        )
+                        detail = re.sub(r'''["',}\s]+$''', "", detail)
+                        existing = next((
+                            alert for alert in watcher_completion["alerts"]
+                            if alert.get("workflow") == workflow_name
+                            and alert.get("checkpoint") == checkpoint_name
+                        ), None)
+                        if existing:
+                            existing["detail"] = detail
+                            existing["severity"] = "danger"
+                        else:
+                            watcher_completion["alerts"].append({
+                                "workflow": workflow_name,
+                                "reason": checkpoint.get("reason") or checkpoint.get("status"),
+                                "checkpoint": checkpoint_name,
+                                "detail": detail,
+                                "severity": "danger",
+                                "day": day,
+                            })
     for checkpoint_states in watcher_days.values():
         if all(item.get("status") in terminal_statuses for item in checkpoint_states):
             watcher_completion["tracked_days"] += 1
@@ -1602,6 +1798,15 @@ def dashboard_stats(requested: Dict[str, Any]) -> Dict[str, Any]:
         }
         for day, states in sorted(watcher_days.items(), reverse=True)
     ]
+    deduped_alerts = []
+    seen_alerts = set()
+    for alert in watcher_completion["alerts"]:
+        key = (alert.get("workflow"), alert.get("checkpoint"), alert.get("reason"))
+        if key in seen_alerts:
+            continue
+        seen_alerts.add(key)
+        deduped_alerts.append(alert)
+    watcher_completion["alerts"] = deduped_alerts[:5]
     checkpoints = (
         watcher.get("workflows", {}).get("activity", {}).get("days", {}).get(today, {}).get("checkpoints", {})
     )
@@ -1729,12 +1934,75 @@ def set_watcher_enabled(requested: Any) -> Dict[str, Any]:
 
 
 def invoke(channel: str, requested: Dict[str, Any]) -> Any:
+    global POST_ENGAGEMENT_ACTIVE_PROCESS
     if channel == "check-watcher-status":
         return watcher_enabled()
     if channel == "toggle-watcher":
         return set_watcher_enabled(requested)
     if channel == "read-obf-dashboard":
         return read_obf_dashboard()
+    if channel == "read-post-engagement-dashboard":
+        value = read_post_engagement_dashboard(str(requested.get("day") or "") or None)
+        value["is_running"] = bool(
+            POST_ENGAGEMENT_ACTIVE_PROCESS
+            and POST_ENGAGEMENT_ACTIVE_PROCESS.poll() is None
+        )
+        return value
+    if channel == "add-post-engagement-source":
+        return {
+            "ok": True,
+            "campaign": add_post_engagement_source(
+                str(requested.get("url") or "").strip(),
+                str(requested.get("day") or "") or None,
+                str(requested.get("cdp_account") or "") or None,
+            ),
+        }
+    if channel == "save-post-engagement-settings":
+        return {"ok": True, "config": save_post_engagement_config(requested)}
+    if channel == "archive-post-engagement-and-fresh":
+        if POST_ENGAGEMENT_ACTIVE_PROCESS and POST_ENGAGEMENT_ACTIVE_PROCESS.poll() is None:
+            return {"ok": False, "error": "Post Engagement is still running. Pause it before starting fresh."}
+        return {"ok": True, **archive_post_engagement_campaign(str(requested.get("day") or "") or None)}
+    if channel == "pause-post-engagement-run":
+        campaign = pause_post_engagement_campaign(str(requested.get("day") or "") or None)
+        return {"ok": True, "campaign": campaign}
+    if channel == "resume-post-engagement-run":
+        campaign = resume_post_engagement_campaign(str(requested.get("day") or "") or None)
+        if POST_ENGAGEMENT_ACTIVE_PROCESS and POST_ENGAGEMENT_ACTIVE_PROCESS.poll() is None:
+            return {"ok": True, "campaign": campaign, "already_running": True}
+        args = [sys.executable, str(SCRIPTS_DIR / "post_engagement.py"), "run", "--execute"]
+        if requested.get("day"):
+            args.extend(["--day", str(requested["day"])])
+        log_path = STATE_DIR / "post_engagement" / "runner.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("a", encoding="utf-8")
+        command = (["/usr/bin/caffeinate", "-i"] if Path("/usr/bin/caffeinate").exists() else []) + args
+        POST_ENGAGEMENT_ACTIVE_PROCESS = subprocess.Popen(
+            command, cwd=PROJECT_DIR, env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        return {"ok": True, "campaign": campaign, "pid": POST_ENGAGEMENT_ACTIVE_PROCESS.pid}
+    if channel in {"start-post-engagement-dry-run", "start-post-engagement-run"}:
+        if POST_ENGAGEMENT_ACTIVE_PROCESS and POST_ENGAGEMENT_ACTIVE_PROCESS.poll() is None:
+            return {"ok": False, "error": "Post Engagement is already running."}
+        args = [sys.executable, str(SCRIPTS_DIR / "post_engagement.py"), "run"]
+        if requested.get("day"):
+            args.extend(["--day", str(requested["day"])])
+        if channel == "start-post-engagement-run":
+            args.append("--execute")
+        log_path = STATE_DIR / "post_engagement" / "runner.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("a", encoding="utf-8")
+        command = (["/usr/bin/caffeinate", "-i"] if Path("/usr/bin/caffeinate").exists() else []) + args
+        POST_ENGAGEMENT_ACTIVE_PROCESS = subprocess.Popen(
+            command,
+            cwd=PROJECT_DIR,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        return {"ok": True, "pid": POST_ENGAGEMENT_ACTIVE_PROCESS.pid, "log_path": str(log_path)}
     if channel == "refresh-obf-source-cache":
         snapshot = refresh_obf_source_snapshot()
         return {"ok": True, "refreshed_at": snapshot["refreshed_at"], "dashboard": read_obf_dashboard()}
@@ -1760,6 +2028,16 @@ def invoke(channel: str, requested: Dict[str, Any]) -> Any:
         return start_activity_watcher(requested)
     if channel == "read-lead-prep-dashboard":
         return read_lead_prep_dashboard()
+    if channel == "read-job-discovery-dashboard":
+        return read_job_discovery_dashboard()
+    if channel == "save-job-discovery-settings":
+        return save_job_discovery_settings(requested)
+    if channel == "toggle-job-discovery-scheduler":
+        return toggle_job_discovery_scheduler(requested)
+    if channel == "start-job-discovery-run":
+        return start_job_discovery_action("run")
+    if channel == "start-job-discovery-reverify":
+        return start_job_discovery_action("reverify")
     if channel == "refresh-lead-review-cache":
         config = read_lead_prep_config()
         target_date = str(config.get("dashboard_date_override") or "").strip()
@@ -1958,6 +2236,8 @@ def invoke(channel: str, requested: Dict[str, Any]) -> Any:
                     int(requested.get("base_volume") or current["base_volume"]),
                 ),
             ),
+            "processing_batch_size": 30,
+            "approval_gate_enabled": bool(requested.get("approval_gate_enabled")),
             "overlap_scan_mode": (
                 "off" if requested.get("overlap_scan_mode") == "off" else "auto"
             ),

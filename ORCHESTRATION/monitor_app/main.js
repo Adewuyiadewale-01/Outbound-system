@@ -1,20 +1,75 @@
-const { app, BrowserWindow, ipcMain, screen, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
-const { spawn, exec } = require('child_process');
+const { spawn, exec, spawnSync } = require('child_process');
 
 let floatingWindow = null;
 let drawerWindow = null;
 let activeProcess = null;
 let activeProcessMeta = null;
 let activeProcessStarting = false;
+let postEngagementProcess = null;
 
-const PROJECT_DIR = path.resolve(
-  process.env.OUTREACH_AUTOMATION_ROOT || path.join(__dirname, '..', '..')
-);
+function isProjectRoot(candidate) {
+  return Boolean(candidate)
+    && fs.existsSync(path.join(candidate, 'state'))
+    && fs.existsSync(path.join(candidate, 'scripts'))
+    && fs.existsSync(path.join(candidate, 'ORCHESTRATION'));
+}
+
+function resolveProjectDir() {
+  const packagedSiblingRoot = path.resolve(process.resourcesPath, '..', '..', '..', '..');
+  const candidates = [
+    process.env.OUTREACH_AUTOMATION_ROOT,
+    app.isPackaged ? packagedSiblingRoot : path.resolve(__dirname, '..', '..'),
+    path.join(os.homedir(), 'codex-outreach-automation')
+  ];
+  const resolved = candidates.find(isProjectRoot);
+  if (resolved) return resolved;
+  // Preserve a useful diagnostic path rather than silently reading the app bundle.
+  return path.resolve(process.env.OUTREACH_AUTOMATION_ROOT || (app.isPackaged ? packagedSiblingRoot : path.join(__dirname, '..', '..')));
+}
+
+const PROJECT_DIR = resolveProjectDir();
 const STATE_DIR = path.join(PROJECT_DIR, 'state');
+
+function loadProjectEnv() {
+  const envPath = path.join(PROJECT_DIR, '.env');
+  try {
+    fs.readFileSync(envPath, 'utf8').split(/\r?\n/).forEach(line => {
+      const match = line.match(/^\s*([A-Z0-9_]+)=(.*)\s*$/);
+      if (match && process.env[match[1]] === undefined) {
+        process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
+      }
+    });
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.warn(`Could not read ${envPath}: ${error.message}`);
+  }
+}
+
+loadProjectEnv();
+
+function isJobDiscoveryRoot(candidate) {
+  return Boolean(candidate)
+    && fs.existsSync(path.join(candidate, 'src', 'cli.mjs'))
+    && fs.existsSync(path.join(candidate, 'config', 'runtime.json'))
+    && fs.existsSync(path.join(candidate, 'package.json'));
+}
+
+function resolveJobDiscoveryDir() {
+  const candidates = [
+    process.env.DAILY_JOB_DISCOVERY_ROOT,
+    path.join(os.homedir(), 'Documents', 'Automation Journey', 'daily-job-discovery')
+  ];
+  return candidates.find(isJobDiscoveryRoot) || candidates[0];
+}
+
+const JOB_DISCOVERY_DIR = resolveJobDiscoveryDir();
+const JOB_DISCOVERY_CONFIG_PATH = path.join(JOB_DISCOVERY_DIR, 'config', 'runtime.json');
+const JOB_DISCOVERY_LOCK_PATH = path.join(JOB_DISCOVERY_DIR, 'data', 'state.sqlite.lock');
+const JOB_DISCOVERY_SCHEDULER_LABEL = 'com.fulltime-job.daily-job-discovery';
 
 function getTodayString() {
   const date = new Date();
@@ -45,7 +100,7 @@ const OBF_CONFIG_DEFAULTS = {
   prep_time: '08:25',
   exec_time: '08:30',
   max_sends: 30,
-  daily_volume: 20,
+  daily_volume: 30,
   prospects_start_row: null,
   timezone: 'Africa/Lagos'
 };
@@ -54,7 +109,9 @@ const LEAD_PREP_CONFIG_DEFAULTS = {
   prep_time: '14:00',
   first_review_deadline: '18:00',
   fallback_review_deadline: '22:00',
-  base_volume: 100,
+  base_volume: 60,
+  processing_batch_size: 30,
+  approval_gate_enabled: false,
   overlap_scan_mode: 'auto',
   fresh_volume_top_up_mode: 'auto',
   dashboard_date_override: ''
@@ -66,6 +123,101 @@ function readJsonFile(filePath, fallback = {}) {
   } catch (error) {
     return fallback;
   }
+}
+
+function jobDiscoveryAvailable() {
+  return isJobDiscoveryRoot(JOB_DISCOVERY_DIR);
+}
+
+function jobDiscoverySchedulerEnabled() {
+  if (process.platform !== 'darwin') return false;
+  const result = spawnSync('launchctl', ['print', `gui/${process.getuid()}/${JOB_DISCOVERY_SCHEDULER_LABEL}`], {
+    stdio: 'ignore'
+  });
+  return result.status === 0;
+}
+
+function runJobDiscoveryNode(args, { timeoutMs = 30_000 } = {}) {
+  return new Promise(resolve => {
+    if (!jobDiscoveryAvailable()) {
+      resolve({ ok: false, code: -1, stdout: '', stderr: `Daily Job Discovery was not found at ${JOB_DISCOVERY_DIR}.` });
+      return;
+    }
+    const child = spawn('node', args, {
+      cwd: JOB_DISCOVERY_DIR,
+      env: { ...process.env }
+    });
+    let stdout = '';
+    let stderr = '';
+    const timeout = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
+    child.stdout.on('data', data => { stdout += data.toString(); });
+    child.stderr.on('data', data => { stderr += data.toString(); });
+    child.on('error', error => {
+      clearTimeout(timeout);
+      resolve({ ok: false, code: -1, stdout, stderr: `${stderr}${error.message}` });
+    });
+    child.on('close', code => {
+      clearTimeout(timeout);
+      resolve({ ok: code === 0, code, stdout, stderr });
+    });
+  });
+}
+
+async function readJobDiscoveryDashboard() {
+  const config = readJsonFile(JOB_DISCOVERY_CONFIG_PATH, {});
+  const lock = readJsonFile(JOB_DISCOVERY_LOCK_PATH, null);
+  const schedulerEnabled = jobDiscoverySchedulerEnabled();
+  const activeHere = activeProcessMeta?.workflow === 'job_discovery';
+  if (!jobDiscoveryAvailable()) {
+    return {
+      available: false,
+      root: JOB_DISCOVERY_DIR,
+      error: `Daily Job Discovery was not found at ${JOB_DISCOVERY_DIR}. Set DAILY_JOB_DISCOVERY_ROOT to use a different location.`,
+      config,
+      scheduler_enabled: false,
+      is_running: false,
+      status: {}
+    };
+  }
+  const result = await runJobDiscoveryNode(['src/cli.mjs', 'status']);
+  let status = {};
+  let error = result.ok ? '' : (result.stderr || result.stdout || 'Status command failed.').trim();
+  try {
+    status = JSON.parse(result.stdout);
+  } catch (parseError) {
+    if (!error) error = 'Daily Job Discovery returned an unreadable status response.';
+  }
+  return {
+    available: true,
+    root: JOB_DISCOVERY_DIR,
+    config,
+    scheduler_enabled: schedulerEnabled,
+    is_running: activeHere || Boolean(status.activeRunId) || Boolean(lock?.runId),
+    active_action: activeHere ? activeProcessMeta.action : (status.activeRunId ? 'scheduled run' : ''),
+    lock,
+    status,
+    error,
+    last_updated: new Date().toISOString()
+  };
+}
+
+function saveJobDiscoverySettings(requested = {}) {
+  if (!jobDiscoveryAvailable()) return { ok: false, error: `Daily Job Discovery was not found at ${JOB_DISCOVERY_DIR}.` };
+  const current = readJsonFile(JOB_DISCOVERY_CONFIG_PATH, {});
+  const dailyRunTime = String(requested.dailyRunTime || current.dailyRunTime || '').trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(dailyRunTime)) {
+    return { ok: false, error: 'Daily run time must use 24-hour HH:MM format.' };
+  }
+  const boundedInteger = (value, fallback, maximum) => Math.max(1, Math.min(maximum, Math.floor(Number(value) || fallback)));
+  const next = {
+    ...current,
+    automationEnabled: Boolean(requested.automationEnabled),
+    dailyRunTime,
+    maxQueriesPerRun: boundedInteger(requested.maxQueriesPerRun, current.maxQueriesPerRun || 180, 500),
+    maxListingsPerRun: boundedInteger(requested.maxListingsPerRun, current.maxListingsPerRun || 180, 1000)
+  };
+  writeJsonFile(JOB_DISCOVERY_CONFIG_PATH, next);
+  return { ok: true, config: next };
 }
 
 function readJsonLines(filePath) {
@@ -611,19 +763,18 @@ function readLeadPrepDashboard() {
   );
   const activity = readActivityDashboard(today);
   const activityLeadIds = new Set(activity.lead_ids);
+  const approvalGateEnabled = Boolean(config.approval_gate_enabled);
   let processingSource = [];
   let selectionMode = 'waiting_for_review_handoff';
-  if (cachedToday.review_complete) {
-    if (computationByLeadId.size) {
-      processingSource = preparedLeads.filter(lead => computationByLeadId.has(String(lead.run_id || '')));
-      selectionMode = 'computation_state';
-    } else if (approvedReviewLeads.length) {
-      processingSource = approvedReviewLeads;
-      selectionMode = 'approved_only';
-    } else {
-      processingSource = preparedLeads.filter(lead => lead.overlap_status === 'Fresh');
-      selectionMode = 'fallback_all_fresh';
-    }
+  if (computationByLeadId.size) {
+    processingSource = preparedLeads.filter(lead => computationByLeadId.has(String(lead.run_id || '')));
+    selectionMode = 'computation_state';
+  } else if (!approvalGateEnabled) {
+    processingSource = preparedLeads;
+    selectionMode = 'approval_disabled';
+  } else if (cachedToday.review_complete) {
+    processingSource = approvedReviewLeads;
+    selectionMode = 'approved_only';
   }
   const processingLeads = processingSource
     .filter(lead => !activityLeadIds.has(String(lead.run_id || '')))
@@ -1034,6 +1185,7 @@ function createFloatingWindow() {
     frame: false,
     transparent: true,
     alwaysOnTop: true,
+    visibleOnAllWorkspaces: true,
     resizable: false,
     skipTaskbar: true,
     webPreferences: {
@@ -1043,6 +1195,10 @@ function createFloatingWindow() {
   });
 
   floatingWindow.loadFile(path.join(__dirname, 'floating.html'));
+  // macOS needs both calls for a small utility window to remain available on
+  // full-screen Spaces, not merely above normal application windows.
+  floatingWindow.setAlwaysOnTop(true, 'screen-saver');
+  floatingWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   preventExternalNavigation(floatingWindow);
 
   floatingWindow.on('closed', () => {
@@ -1071,6 +1227,8 @@ function createDrawerWindow() {
     show: false,
     alwaysOnTop: false,
     resizable: true,
+    fullscreenable: true,
+    simpleFullscreen: false,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false
@@ -1099,6 +1257,15 @@ function preventExternalNavigation(window) {
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: app.name,
+      submenu: [{ role: 'hide' }, { role: 'hideOthers' }, { type: 'separator' }, { role: 'quit' }]
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' }
+  ]));
   createFloatingWindow();
   createDrawerWindow();
 
@@ -1132,6 +1299,14 @@ ipcMain.on('toggle-drawer', () => {
     drawerWindow.focus();
     drawerWindow.webContents.send('slide-in');
   }
+});
+
+ipcMain.on('toggle-fullscreen', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) return;
+  const next = !window.isFullScreen();
+  window.setFullScreen(next);
+  event.sender.send('fullscreen-changed', next);
 });
 
 function cdpPortOpen(timeoutMs = 700) {
@@ -1304,6 +1479,51 @@ ipcMain.on('stop-command', (event) => {
   }
 });
 
+ipcMain.on('run-job-discovery-command', (event, { action }) => {
+  const allowed = new Set(['run', 'reverify']);
+  if (!allowed.has(action)) {
+    event.reply('command-error', 'Unsupported Daily Job Discovery action.');
+    return;
+  }
+  if (!jobDiscoveryAvailable()) {
+    event.reply('command-error', `Daily Job Discovery was not found at ${JOB_DISCOVERY_DIR}.`);
+    return;
+  }
+  if (activeProcess || activeProcessStarting) {
+    event.reply('command-error', 'Another task is already running.');
+    return;
+  }
+  activeProcessStarting = true;
+  activeProcessMeta = { workflow: 'job_discovery', action, started_at: new Date().toISOString() };
+  try {
+    activeProcess = spawn('node', ['src/cli.mjs', action], {
+      cwd: JOB_DISCOVERY_DIR,
+      env: { ...process.env }
+    });
+  } catch (error) {
+    activeProcessStarting = false;
+    activeProcessMeta = null;
+    event.reply('command-output', `Failed to start Daily Job Discovery: ${error.message}\n`);
+    event.reply('command-exit', -1);
+    return;
+  }
+  activeProcessStarting = false;
+  activeProcess.stdout.on('data', data => drawerWindow?.webContents.send('command-output', data.toString()));
+  activeProcess.stderr.on('data', data => drawerWindow?.webContents.send('command-output', data.toString()));
+  activeProcess.on('close', code => {
+    activeProcess = null;
+    activeProcessMeta = null;
+    drawerWindow?.webContents.send('command-exit', code);
+  });
+  activeProcess.on('error', error => {
+    activeProcess = null;
+    activeProcessStarting = false;
+    activeProcessMeta = null;
+    drawerWindow?.webContents.send('command-output', `Failed to run Daily Job Discovery: ${error.message}\n`);
+    drawerWindow?.webContents.send('command-exit', -1);
+  });
+});
+
 // Check watcher status
 ipcMain.handle('check-watcher-status', async () => {
   return new Promise((resolve) => {
@@ -1330,6 +1550,77 @@ ipcMain.handle('toggle-watcher', async (event, enable) => {
 
 ipcMain.handle('read-obf-dashboard', async () => readObfDashboard());
 ipcMain.handle('read-lead-prep-dashboard', async () => readLeadPrepDashboard());
+ipcMain.handle('read-post-engagement-dashboard', async (event, requested = {}) => {
+  const args = ['status'];
+  if (requested.day) args.push('--day', String(requested.day));
+  const result = await runProjectPython('scripts/post_engagement.py', args);
+  if (!result.ok) return { config: {}, campaign: {}, history: [], high_signal: [], error: result.stderr || result.stdout };
+  try {
+    return { ...JSON.parse(result.stdout), is_running: Boolean(postEngagementProcess) };
+  } catch (error) {
+    return { config: {}, campaign: {}, history: [], high_signal: [], error: error.message };
+  }
+});
+ipcMain.handle('add-post-engagement-source', async (event, requested = {}) => {
+  const args = ['add-source', String(requested.url || '')];
+  if (requested.day) args.push('--day', String(requested.day));
+  if (requested.cdp_account) args.push('--cdp-account', String(requested.cdp_account));
+  const result = await runProjectPython('scripts/post_engagement.py', args);
+  return result.ok ? { ok: true } : { ok: false, error: result.stderr || result.stdout };
+});
+ipcMain.handle('save-post-engagement-settings', async (event, requested = {}) => {
+  const result = await runProjectPython('scripts/post_engagement.py', ['configure', JSON.stringify(requested)]);
+  return result.ok ? { ok: true } : { ok: false, error: result.stderr || result.stdout };
+});
+ipcMain.handle('pause-post-engagement-run', async (event, requested = {}) => {
+  const args = ['pause'];
+  if (requested.day) args.push('--day', String(requested.day));
+  const result = await runProjectPython('scripts/post_engagement.py', args);
+  return result.ok ? { ok: true } : { ok: false, error: result.stderr || result.stdout };
+});
+function startPostEngagement(execute) {
+  if (postEngagementProcess) return { ok: false, error: 'Post Engagement is already running.' };
+  const args = [path.join(PROJECT_DIR, 'scripts', 'post_engagement.py'), 'run'];
+  if (execute) args.push('--execute');
+  // Keep the Mac awake across the persisted 90-minute inter-batch waits.
+  const hasCaffeinate = process.platform === 'darwin' && fs.existsSync('/usr/bin/caffeinate');
+  const child = hasCaffeinate
+    ? spawn('/usr/bin/caffeinate', ['-i', 'python3', ...args], { cwd: PROJECT_DIR, env: { ...process.env, PYTHONUNBUFFERED: '1' } })
+    : spawn('python3', args, { cwd: PROJECT_DIR, env: { ...process.env, PYTHONUNBUFFERED: '1' } });
+  postEngagementProcess = child;
+  child.stdout.on('data', data => drawerWindow?.webContents.send('command-output', data.toString()));
+  child.stderr.on('data', data => drawerWindow?.webContents.send('command-output', data.toString()));
+  child.on('close', code => {
+    postEngagementProcess = null;
+    drawerWindow?.webContents.send('command-output', `Post Engagement finished with code ${code}.\n`);
+    drawerWindow?.webContents.send('post-engagement-updated');
+  });
+  child.on('error', error => {
+    postEngagementProcess = null;
+    drawerWindow?.webContents.send('command-output', `Post Engagement failed to start: ${error.message}\n`);
+  });
+  return { ok: true, pid: child.pid };
+}
+ipcMain.handle('start-post-engagement-dry-run', async () => startPostEngagement(false));
+ipcMain.handle('start-post-engagement-run', async () => startPostEngagement(true));
+ipcMain.handle('resume-post-engagement-run', async (event, requested = {}) => {
+  const args = ['resume'];
+  if (requested.day) args.push('--day', String(requested.day));
+  const result = await runProjectPython('scripts/post_engagement.py', args);
+  if (!result.ok) return { ok: false, error: result.stderr || result.stdout };
+  return startPostEngagement(true);
+});
+ipcMain.handle('read-job-discovery-dashboard', async () => readJobDiscoveryDashboard());
+ipcMain.handle('save-job-discovery-settings', async (event, requested) => saveJobDiscoverySettings(requested));
+ipcMain.handle('toggle-job-discovery-scheduler', async (event, requested) => {
+  if (!jobDiscoveryAvailable()) return { ok: false, error: `Daily Job Discovery was not found at ${JOB_DISCOVERY_DIR}.` };
+  const enabled = Boolean(typeof requested === 'object' ? requested.enabled : requested);
+  const script = enabled ? 'scripts/install-launchd.mjs' : 'scripts/uninstall-launchd.mjs';
+  const result = await runJobDiscoveryNode([script], { timeoutMs: 30_000 });
+  return result.ok
+    ? { ok: true, enabled: jobDiscoverySchedulerEnabled() }
+    : { ok: false, error: (result.stderr || result.stdout || 'Unable to change scheduler service.').trim() };
+});
 ipcMain.handle('refresh-lead-review-cache', async () => {
   if (activeProcess) {
     return { ok: false, error: 'Wait for the active automation to finish before refreshing Lead Review.' };
@@ -1513,6 +1804,8 @@ ipcMain.handle('save-lead-prep-settings', async (event, requested) => {
     autonomous_prep_enabled: Boolean(requested.autonomous_prep_enabled),
     prep_time: String(requested.prep_time || current.prep_time),
     base_volume: Math.max(1, Math.min(500, Number(requested.base_volume || current.base_volume))),
+    processing_batch_size: 30,
+    approval_gate_enabled: Boolean(requested.approval_gate_enabled),
     overlap_scan_mode: requested.overlap_scan_mode === 'off' ? 'off' : 'auto',
     fresh_volume_top_up_mode: requested.fresh_volume_top_up_mode === 'off' ? 'off' : 'auto'
   };
@@ -1534,7 +1827,7 @@ ipcMain.handle('save-obf-settings', async (event, requested) => {
     prep_time: String(requested.prep_time || current.prep_time),
     exec_time: String(requested.exec_time || current.exec_time),
     max_sends: Math.max(1, Math.min(30, Number(requested.max_sends || current.max_sends))),
-    daily_volume: Math.max(1, Math.min(30, Number(requested.daily_volume || current.daily_volume || 20))),
+    daily_volume: Math.max(1, Math.min(30, Number(requested.daily_volume || current.daily_volume || 30))),
     prospects_start_row: Number(requested.prospects_start_row || current.prospects_start_row || 0) || null
   };
   if (!/^\d{2}:\d{2}$/.test(next.prep_time) || !/^\d{2}:\d{2}$/.test(next.exec_time)) {
@@ -1542,7 +1835,7 @@ ipcMain.handle('save-obf-settings', async (event, requested) => {
   }
 
   const dashboard = readObfDashboard();
-  const desiredVolume = Number(requested.daily_volume || dashboard.control?.effective_target || 20);
+  const desiredVolume = Number(requested.daily_volume || dashboard.control?.effective_target || 30);
   const desiredStartRow = Number(requested.prospects_start_row || dashboard.control?.prospects_start_row || 0);
   const sheetChanged = requested.update_sheet !== false && (
     desiredVolume !== Number(dashboard.control?.effective_target || 0)
@@ -1677,14 +1970,20 @@ ipcMain.handle('read-stats', async (event, requested = {}) => {
       const wData = JSON.parse(fs.readFileSync(watcherPath, 'utf8'));
       const workflows = wData.workflows || {};
       const terminalStatuses = new Set(['completed', 'failed_terminal', 'cutoff_skipped', 'needs_attention', 'paused_manual_stop']);
-      stats.watcher.alerts = (wData.alerts || []).filter(alert => !alert.acknowledged);
+      // The overview is a live daily view. Historical, unacknowledged alerts still
+      // belong in watcher history, but must not be concatenated into today's banner.
+      stats.watcher.alerts = (wData.alerts || []).filter(alert => (
+        !alert.acknowledged
+        && (alert.day === today || String(alert.created_at || '').startsWith(today))
+      ));
       const queueDir = path.join(STATE_DIR, 'prefinal_queue');
       if (fs.existsSync(queueDir)) {
         for (const file of fs.readdirSync(queueDir).filter(name => name.endsWith('.json'))) {
           try {
             const queue = JSON.parse(fs.readFileSync(path.join(queueDir, file), 'utf8'));
             const issueCount = Object.keys(queue.activity_issues || {}).length;
-            if (issueCount && !['prospects_bridged', 'final_bridged'].includes(queue.status)) {
+            const queueDay = String(queue.updated_at || queue.prepared_at || queue.created_at || '').slice(0, 10);
+            if (queueDay === today && issueCount && !['prospects_bridged', 'final_bridged'].includes(queue.status)) {
               stats.watcher.alerts.push({ workflow: 'activity', reason: `${issueCount}_quarantined_profile_issues`, checkpoint: queue.fingerprint || '' });
             }
           } catch (e) {}
@@ -1706,6 +2005,19 @@ ipcMain.handle('read-stats', async (event, requested = {}) => {
                 next_retry_at: cp.next_retry_at || null,
                 severity: 'info'
               });
+            }
+            if (day === today && ['failed_terminal', 'needs_attention', 'interrupted_terminal'].includes(cp.status)) {
+              const commands = Array.isArray(cp.result?.commands) ? cp.result.commands : [];
+              const output = commands.map(command => `${command.stdout_tail || ''}\n${command.stderr_tail || ''}`).join('\n');
+              const blocked = output.match(/Blocked:\s*([^\n]+)/i);
+              const detail = (blocked?.[1]?.trim() || String(cp.reason || cp.status || 'checkpoint failed').replaceAll('_', ' ')).replace(/["',}\s]+$/, '');
+              const existing = stats.watcher.alerts.find(alert => alert.workflow === wfName && alert.checkpoint === cpName);
+              if (existing) {
+                existing.detail = detail;
+                existing.severity = 'danger';
+              } else {
+                stats.watcher.alerts.push({ workflow: wfName, checkpoint: cpName, reason: cp.reason || cp.status, detail, severity: 'danger', day });
+              }
             }
             if (cp.status === 'running' || cp.status === 'waiting') {
               if (wfName === 'activity') stats.activity.is_running = true;
@@ -1735,6 +2047,13 @@ ipcMain.handle('read-stats', async (event, requested = {}) => {
           const finalized = checkpointStates.every(cp => terminalStatuses.has(cp.status));
           return { date: day, completed, scheduled: checkpointStates.length, rate: Math.round((completed / checkpointStates.length) * 100), outcome: completed === checkpointStates.length ? 'Completed' : (finalized ? 'Finalized with exceptions' : 'In progress') };
         });
+      const seenAlerts = new Set();
+      stats.watcher.alerts = stats.watcher.alerts.filter(alert => {
+        const key = `${alert.workflow || ''}:${alert.checkpoint || ''}:${alert.reason || ''}`;
+        if (seenAlerts.has(key)) return false;
+        seenAlerts.add(key);
+        return true;
+      }).slice(0, 5);
     } catch (e) {}
   }
 

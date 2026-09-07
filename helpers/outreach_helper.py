@@ -148,7 +148,9 @@ def load_prospect_queue(
     """Load prospects that need connection requests from OBF Prospects tab.
 
     Filters for rows where Outreach Status is empty or matches status_filter.
-    Returns shuffled list up to `limit` prospects.
+    Returns eligible prospects up to `limit`. When ``start_row`` is supplied,
+    rows at or after it are prioritized; older unused rows remain an overflow
+    source so a new bridge cannot waste an otherwise runnable day.
 
     Each prospect dict includes:
         - id, company, engaged_person
@@ -161,8 +163,6 @@ def load_prospect_queue(
     queue = []
     start_row_value = int(start_row or 0)
     for row in data["rows"]:
-        if start_row_value and int(row.get("_row_number", 0) or 0) < start_row_value:
-            continue
         outreach_status = str(row.get("Outreach Status", "")).strip()
 
         # Filter logic
@@ -211,7 +211,20 @@ def load_prospect_queue(
         }
         queue.append(prospect)
 
-    if shuffle:
+    if start_row_value:
+        priority_rows = [
+            prospect for prospect in queue
+            if int(prospect.get("_row_number", 0) or 0) >= start_row_value
+        ]
+        overflow_rows = [
+            prospect for prospect in queue
+            if int(prospect.get("_row_number", 0) or 0) < start_row_value
+        ]
+        if shuffle:
+            random.shuffle(priority_rows)
+            random.shuffle(overflow_rows)
+        queue = priority_rows + overflow_rows
+    elif shuffle:
         random.shuffle(queue)
 
     if limit and len(queue) > limit:

@@ -64,6 +64,7 @@ SEARCH_TASKS_DIR = STATE_DIR / "search_tasks"
 BRIDGES_DIR = STATE_DIR / "bridges"
 RESEARCH_ARCHIVE_DIR = STATE_DIR / "research_archive"
 DEFAULT_RESEARCH_ARCHIVE_INDEX = RESEARCH_ARCHIVE_DIR / "index.json"
+LEAD_PREP_CONFIG_PATH = ROOT / "state" / "lead_prep_orchestration_config.json"
 
 SOURCE_COLUMNS = [
     "ID",
@@ -237,6 +238,23 @@ def ensure_dirs() -> None:
 
 def clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def approval_gate_enabled() -> bool:
+    """Read the shared Lead Prep setting without making processing depend on the UI."""
+    try:
+        payload = json.loads(LEAD_PREP_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(payload.get("approval_gate_enabled", False))
+
+
+def resolve_ignore_review_approval(args: argparse.Namespace) -> bool:
+    """Respect an explicit CLI choice, otherwise use the dashboard configuration."""
+    requested = getattr(args, "ignore_review_approval", None)
+    if requested is not None:
+        return bool(requested)
+    return not approval_gate_enabled()
 
 
 def normalize_key(value: Any) -> str:
@@ -1378,7 +1396,13 @@ def record_outreach_control_prospects_start_row(
         if sheet_values_equal(cell_value, target_date):
             matches.append(row_number)
     if not matches:
-        raise ValueError(f"No {control_tab} row found for {format_sheet_date(target_date)}")
+        # Reuse OBF's daily-row policy instead of inventing target values here.
+        from linkedin_outreach_session import _read_outreach_control
+        _, control_row, _, _ = _read_outreach_control(
+            str(credentials_path), sheet_url, format_sheet_date(target_date),
+            auto_create_missing=True,
+        )
+        matches.append(int(control_row["_row_number"]))
     if len(matches) > 1:
         raise ValueError(f"Multiple {control_tab} rows found for {format_sheet_date(target_date)}")
     row_number = matches[0]
@@ -1434,6 +1458,20 @@ def bridge_prefinal_to_prospects(args: argparse.Namespace) -> Dict[str, Any]:
         return result
     if state_file.exists() and not args.force:
         previous = json.loads(state_file.read_text())
+        if previous.get("write_start_row") and previous.get("outreach_control_update", {}).get("ok") is False:
+            # Rows already exist: retry only the unfinished control update.
+            if args.dry_run:
+                return {**previous, "ok": False, "status": "control_sync_pending", "dry_run": True}
+            try:
+                previous["outreach_control_update"] = record_outreach_control_prospects_start_row(
+                    Path(args.credentials), args.prospects_sheet_url, target_date,
+                    previous["write_start_row"],
+                )
+                previous.update(ok=True, status="processed", blocked=[])
+            except Exception as exc:
+                previous.update(ok=False, status="control_sync_pending", blocked=[str(exc)])
+            state_file.write_text(json.dumps(previous, indent=2, ensure_ascii=False) + "\n")
+            return previous
         if previous.get("status") == "processed":
             result.update(
                 {
@@ -1475,12 +1513,13 @@ def bridge_prefinal_to_prospects(args: argparse.Namespace) -> Dict[str, Any]:
                     start_row,
                 )
             except Exception as exc:
+                result["ok"] = False
                 result["outreach_control_update"] = {"ok": False, "error": str(exc)}
                 result["blocked"].append(f"Prospects Start Row update failed: {exc}")
         if args.dry_run:
             result["status"] = "dry_run"
         elif rows_written:
-            result["status"] = "processed"
+            result["status"] = "processed" if result["ok"] else "control_sync_pending"
             result["processed_at"] = datetime.now().isoformat(timespec="seconds")
         elif result["skipped_existing_ids"]:
             result["status"] = "skipped_existing_ids"
@@ -1917,7 +1956,7 @@ def approved_gate_status(args: argparse.Namespace) -> Dict[str, Any]:
         review_tab=args.review_tab,
         credentials=args.credentials,
         threshold=args.approval_threshold,
-        all_leads=args.ignore_review_approval,
+        all_leads=resolve_ignore_review_approval(args),
         lane_scope=args.review_lane_scope,
         review_slice=args.review_slice,
     )
@@ -1933,7 +1972,7 @@ def claim_approved_gate(args: argparse.Namespace) -> Dict[str, Any]:
             review_tab=args.review_tab,
             credentials=args.credentials,
             threshold=args.approval_threshold,
-            all_leads=args.ignore_review_approval,
+            all_leads=resolve_ignore_review_approval(args),
             lane_scope=args.review_lane_scope,
             review_slice=args.review_slice,
         )
@@ -2611,11 +2650,12 @@ def notify_review(run: Dict[str, Any], run_file: Path, args: argparse.Namespace)
 
 
 def filter_run_to_approved(run: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    ignore_review_approval = resolve_ignore_review_approval(args)
     rows = read_review_rows(Path(args.credentials), source_sheet_url(args), args.review_tab, run.get("run_id", ""))
     approved_ids = {
         clean_text(row.get("Run ID"))
         for row in rows
-        if (args.ignore_review_approval or checkbox_truthy(row.get("Approved"))) and clean_text(row.get("Run ID"))
+        if (ignore_review_approval or checkbox_truthy(row.get("Approved"))) and clean_text(row.get("Run ID"))
     }
     use_by_id = {
         clean_text(row.get("Run ID")): clean_text(row.get("Use"))
@@ -2626,7 +2666,7 @@ def filter_run_to_approved(run: Dict[str, Any], args: argparse.Namespace) -> Dic
     approved_leads = [lead_by_id[lead_id] for lead_id in approved_ids if lead_id in lead_by_id]
     approved_leads.sort(key=lambda lead: lead.get("source_rows", {}).get("company_row") or 0)
     if not approved_leads:
-        selected_label = "leads" if args.ignore_review_approval else "approved leads"
+        selected_label = "leads" if ignore_review_approval else "approved leads"
         raise ValueError(f"No {selected_label} found in {args.review_tab} for run {run.get('run_id', '')}.")
 
     for lead in approved_leads:
@@ -2640,17 +2680,18 @@ def filter_run_to_approved(run: Dict[str, Any], args: argparse.Namespace) -> Dic
         for index, batch in enumerate(chunks(approved_leads, args.batch_size))
     ]
     run["source"]["approved_count"] = len(approved_leads)
-    run["source"]["selection_mode"] = "all_leads" if args.ignore_review_approval else "approved_only"
+    run["source"]["selection_mode"] = "approval_disabled" if ignore_review_approval else "approved_only"
     run["status"] = "approved_for_processing"
     return run
 
 
 def approved_leads_from_review(run: Dict[str, Any], args: argparse.Namespace) -> List[Dict[str, Any]]:
+    ignore_review_approval = resolve_ignore_review_approval(args)
     rows = read_review_rows(Path(args.credentials), source_sheet_url(args), args.review_tab, run.get("run_id", ""))
     approved_rows = [
         row
         for row in rows
-        if (args.ignore_review_approval or checkbox_truthy(row.get("Approved"))) and clean_text(row.get("Run ID"))
+        if (ignore_review_approval or checkbox_truthy(row.get("Approved"))) and clean_text(row.get("Run ID"))
     ]
     lane_scope = clean_text(getattr(args, "review_lane_scope", "all")).lower()
     if lane_scope in {"design", "automation"}:
@@ -2686,9 +2727,10 @@ def approved_leads_from_review(run: Dict[str, Any], args: argparse.Namespace) ->
 
 
 def freeze_approved(run: Dict[str, Any], run_file: Path, args: argparse.Namespace) -> Tuple[Dict[str, Any], Path, Dict[str, Any], Path]:
+    ignore_review_approval = resolve_ignore_review_approval(args)
     approved = approved_leads_from_review(run, args)
     if not approved:
-        selected_label = "leads" if args.ignore_review_approval else "approved leads"
+        selected_label = "leads" if ignore_review_approval else "approved leads"
         raise ValueError(f"No {selected_label} found in {args.review_tab}.")
 
     snapshot_id = now_run_id()
@@ -2701,7 +2743,7 @@ def freeze_approved(run: Dict[str, Any], run_file: Path, args: argparse.Namespac
         "source_run_id": run.get("run_id", ""),
         "source_run_file": str(run_file),
         "approved_count": len(approved),
-        "selection_mode": "all_leads" if args.ignore_review_approval else "approved_only",
+        "selection_mode": "approval_disabled" if ignore_review_approval else "approved_only",
         "review_lane_scope": args.review_lane_scope,
         "review_slice": args.review_slice,
         "leads": approved,
@@ -2748,7 +2790,7 @@ def freeze_approved(run: Dict[str, Any], run_file: Path, args: argparse.Namespac
             computation_lead["notes"].append("Archive research was already consumed by an earlier publication.")
         computation_leads.append(computation_lead)
 
-    selection_mode = "all_leads" if args.ignore_review_approval else "approved_only"
+    selection_mode = "approval_disabled" if ignore_review_approval else "approved_only"
     computation = {
         "computation_id": snapshot_id,
         "created_at": snapshot["created_at"],
@@ -2758,7 +2800,7 @@ def freeze_approved(run: Dict[str, Any], run_file: Path, args: argparse.Namespac
         "selection_mode": selection_mode,
         "review_lane_scope": args.review_lane_scope,
         "review_slice": args.review_slice,
-        "publication_mode": "archive_only" if selection_mode == "all_leads" else "publish_approved",
+        "publication_mode": "publish_all" if selection_mode == "approval_disabled" else "publish_approved",
         "status": "research_pending" if archive_reused_count < len(computation_leads) else "archive_reused",
         "lead_count": len(computation_leads),
         "archive_reused_count": archive_reused_count,
@@ -3285,7 +3327,20 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-search-tasks", type=int, default=50)
     parser.add_argument("--search-accept-threshold", type=float, default=0.45)
     parser.add_argument("--approval-threshold", type=int, default=20)
-    parser.add_argument("--ignore-review-approval", action="store_true", help="Process every Lead Review row in today's date group, ignoring Approved.")
+    approval_mode = parser.add_mutually_exclusive_group()
+    approval_mode.add_argument(
+        "--ignore-review-approval",
+        dest="ignore_review_approval",
+        action="store_true",
+        default=None,
+        help="Process every Lead Review row, overriding the shared approval-gate setting.",
+    )
+    approval_mode.add_argument(
+        "--require-review-approval",
+        dest="ignore_review_approval",
+        action="store_false",
+        help="Process approved Lead Review rows only, overriding the shared approval-gate setting.",
+    )
     parser.add_argument(
         "--review-lane-scope",
         choices=("all", "design", "automation"),

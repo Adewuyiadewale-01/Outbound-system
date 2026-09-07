@@ -97,7 +97,9 @@ DEFAULT_LEAD_PREP_CONFIG = {
     "prep_time": "14:00",
     "first_review_deadline": "18:00",
     "fallback_review_deadline": "22:00",
-    "base_volume": 100,
+    "base_volume": 60,
+    "processing_batch_size": 30,
+    "approval_gate_enabled": False,
     "overlap_scan_mode": "auto",
     "fresh_volume_top_up_mode": "auto",
 }
@@ -153,7 +155,9 @@ def lead_prep_config() -> Dict[str, Any]:
         stored["overlap_scan_mode"] = stored["reconciliation_mode"]
     payload = {**DEFAULT_LEAD_PREP_CONFIG, **stored}
     payload["autonomous_prep_enabled"] = bool(payload.get("autonomous_prep_enabled"))
-    payload["base_volume"] = max(1, min(500, int(payload.get("base_volume") or 50)))
+    payload["base_volume"] = max(1, min(500, int(payload.get("base_volume") or 60)))
+    payload["processing_batch_size"] = max(1, min(500, int(payload.get("processing_batch_size") or 30)))
+    payload["approval_gate_enabled"] = bool(payload.get("approval_gate_enabled"))
     payload["overlap_scan_mode"] = "off" if payload.get("overlap_scan_mode") == "off" else "auto"
     payload["fresh_volume_top_up_mode"] = (
         "off" if payload.get("fresh_volume_top_up_mode") == "off" else "auto"
@@ -183,6 +187,8 @@ def lead_prep_commands(config: Dict[str, Any]) -> List[List[str]]:
         "prepare-review",
         "--limit",
         str(config["base_volume"]),
+        "--batch-size",
+        str(config["processing_batch_size"]),
     ]
     if config.get("overlap_scan_mode") == "off":
         command.append("--disable-overlap-scan")
@@ -645,9 +651,17 @@ def checkpoint_failure_reason(result: Dict[str, Any]) -> str:
         clean(failed.get("stderr_tail")),
         clean(failed.get("stdout_tail")),
     ]).lower()
+    if any(marker in text for marker in (
+        "nameresolutionerror", "failed to resolve", "ssleoferror",
+        "connectionerror", "connection reset", "network is unreachable",
+        "connecttimeout", "readtimeout", "temporarily unavailable",
+    )):
+        return "network_failure"
+    if '"termination_signal"' in text or '"interrupted": true' in text:
+        return "runner_interrupted"
     if "login" in text or "checkpoint challenge" in text or "security challenge" in text:
         return "linkedin_authentication_required"
-    if "missing required" in text or "schema" in text or "credential" in text:
+    if any(marker in text for marker in ("missing required", "schema error", "invalid_grant", "invalid_client", "credentials file not found")):
         return "configuration_or_schema_error"
     if "chrome" in text or "cdp" in text or "timeout" in text:
         return "browser_or_cdp_failure"

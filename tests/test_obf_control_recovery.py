@@ -78,6 +78,7 @@ class ObfControlRecoveryTests(unittest.TestCase):
         self.assertEqual(created["source_date"], "8/4/2026")
         self.assertEqual(created["target"], 20)
         self.assertEqual(created["prospects_start_row"], 100)
+        self.assertEqual(created["lane_targets"], {"Design": 10, "Automation": 10})
         row = dict(zip(headers, worksheet.appended[0][0]))
         self.assertEqual(row["Date"], "8/6/2026")
         self.assertEqual(row["Base Target"], "20")
@@ -96,7 +97,75 @@ class ObfControlRecoveryTests(unittest.TestCase):
         )
 
         self.assertEqual(created["target_source"], "default")
-        self.assertEqual(created["target"], obf.DEFAULT_TARGET)
+        self.assertEqual(created["target"], 30)
+        self.assertEqual(created["lane_targets"], {"Design": 15, "Automation": 15})
+        row = dict(zip(obf.OUTREACH_CONTROL_HEADERS, worksheet.appended[0][0]))
+        self.assertIn(obf.DEFAULT_LANE_SPLIT_MARKER, row["Notes"])
+
+    def test_baseline_queue_selects_exactly_fifteen_per_lane(self):
+        queue = [
+            {"id": f"d-{index}", "primary_lane": "Design"}
+            for index in range(20)
+        ] + [
+            {"id": f"a-{index}", "primary_lane": "Automation"}
+            for index in range(20)
+        ]
+
+        selected, selected_counts, available_counts = obf._select_queue_for_lane_targets(
+            queue, {"Design": 15, "Automation": 15}
+        )
+
+        self.assertEqual(len(selected), 30)
+        self.assertEqual(selected_counts, {"Design": 15, "Automation": 15})
+        self.assertEqual(available_counts, {"Design": 20, "Automation": 20})
+
+    def test_prep_auto_assigns_only_blank_lane_in_imminent_batch(self):
+        queue = [
+            {"id": f"design-{index}", "primary_lane": "Design", "_row_number": index + 2}
+            for index in range(5)
+        ] + [{"id": "blank", "primary_lane": "", "_row_number": 7}]
+
+        assigned = obf._auto_assign_missing_primary_lanes(
+            queue=queue,
+            remaining=6,
+            lane_targets={},
+        )
+
+        self.assertEqual(queue[-1]["primary_lane"], "Automation")
+        self.assertEqual(assigned["assignments"], [{
+            "prospect_id": "blank", "company": "", "row_number": 7, "primary_lane": "Automation"
+        }])
+
+    def test_prep_auto_assignment_respects_explicit_lane_deficits(self):
+        queue = [
+            {"id": "design-1", "primary_lane": "Design", "_row_number": 2},
+            {"id": "design-2", "primary_lane": "Design", "_row_number": 3},
+            {"id": "blank-1", "primary_lane": "", "_row_number": 4},
+            {"id": "blank-2", "primary_lane": "", "_row_number": 5},
+            {"id": "blank-3", "primary_lane": "", "_row_number": 6},
+            {"id": "already-automation", "primary_lane": "Automation", "_row_number": 7},
+        ]
+
+        assigned = obf._auto_assign_missing_primary_lanes(
+            queue=queue,
+            remaining=6,
+            lane_targets={"Design": 3, "Automation": 3},
+        )
+
+        self.assertEqual([row["primary_lane"] for row in queue], [
+            "Design", "Design", "Automation", "Design", "Automation", "Automation"
+        ])
+        self.assertEqual(len(assigned["assignments"]), 3)
+
+    def test_lane_targets_scale_with_remaining_volume(self):
+        self.assertEqual(
+            obf._control_lane_targets({"Effective Target": "6"}, remaining=6),
+            {"Design": 3, "Automation": 3},
+        )
+        self.assertEqual(
+            obf._control_lane_targets({"Effective Target": "5"}, remaining=5),
+            {"Design": 3, "Automation": 2},
+        )
 
 
 if __name__ == "__main__":

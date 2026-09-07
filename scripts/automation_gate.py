@@ -29,6 +29,7 @@ OPENCLAW_CREDS = Path.home() / ".openclaw" / "credentials" / "google-sheets.json
 DEFAULT_CREDS = REPO_CREDS if REPO_CREDS.exists() else OPENCLAW_CREDS
 AUTOMATION_DIR = ROOT / "state" / "lead_exec_research" / "automation"
 CLAIMS_DIR = AUTOMATION_DIR / "claims"
+LEAD_PREP_CONFIG_PATH = ROOT / "state" / "lead_prep_orchestration_config.json"
 
 
 def clean_text(value: Any) -> str:
@@ -37,6 +38,21 @@ def clean_text(value: Any) -> str:
 
 def checkbox_truthy(value: Any) -> bool:
     return clean_text(value).lower() in {"true", "yes", "y", "1", "checked"}
+
+
+def approval_gate_enabled() -> bool:
+    try:
+        payload = json.loads(LEAD_PREP_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(payload.get("approval_gate_enabled", False))
+
+
+def resolve_all_leads(args: argparse.Namespace) -> bool:
+    requested = getattr(args, "all_leads", None)
+    if requested is not None:
+        return bool(requested)
+    return not approval_gate_enabled()
 
 
 def parse_review_slice(value: Any) -> Optional[Dict[str, int]]:
@@ -228,14 +244,15 @@ def status_payload(args: argparse.Namespace) -> Dict[str, Any]:
     ]
     lane_scope = getattr(args, "lane_scope", "all")
     review_slice = getattr(args, "review_slice", "")
+    all_leads = resolve_all_leads(args)
     unsliced_rows = selected_rows(
         group["rows"],
-        all_leads=getattr(args, "all_leads", False),
+        all_leads=all_leads,
         lane_scope=lane_scope,
     )
     rows = selected_rows(
         group["rows"],
-        all_leads=getattr(args, "all_leads", False),
+        all_leads=all_leads,
         lane_scope=lane_scope,
         review_slice=review_slice,
     )
@@ -257,7 +274,8 @@ def status_payload(args: argparse.Namespace) -> Dict[str, Any]:
         "approved_design_count": len(approved_design),
         "selected_count": len(rows),
         "slice_total_selected_count": len(unsliced_rows),
-        "selection_mode": "all_leads" if getattr(args, "all_leads", False) else "approved_only",
+        "selection_mode": "approval_disabled" if all_leads else "approved_only",
+        "approval_gate_enabled": not all_leads,
         "lane_scope": lane_scope,
         "review_slice": review_slice,
         "group_date": group.get("group_date", ""),
@@ -268,7 +286,7 @@ def status_payload(args: argparse.Namespace) -> Dict[str, Any]:
         "fresh_count": len(fresh_rows),
         "archive_conflict_count": len(conflicts),
         "threshold": args.threshold,
-        "ready": bool(rows) if getattr(args, "all_leads", False) else len(approved_design) >= args.threshold,
+        "ready": bool(rows) if all_leads else len(approved_design) >= args.threshold,
         "fingerprint": fingerprint,
         "claim_status": claim.get("status", ""),
         "claim_file": str(claim_path(fingerprint)) if fingerprint else "",
@@ -323,7 +341,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--review-tab", default=os.environ.get("LEAD_RESEARCH_REVIEW_TAB", DEFAULT_REVIEW_TAB))
     parser.add_argument("--credentials", default=os.environ.get("GOOGLE_SHEETS_CREDENTIALS", str(DEFAULT_CREDS)))
     parser.add_argument("--threshold", type=int, default=20)
-    parser.add_argument("--all-leads", action="store_true", help="Select every Lead Review row in today's date group, ignoring Approved.")
+    approval_mode = parser.add_mutually_exclusive_group()
+    approval_mode.add_argument(
+        "--all-leads",
+        dest="all_leads",
+        action="store_true",
+        default=None,
+        help="Process every Lead Review row, overriding the shared approval-gate setting.",
+    )
+    approval_mode.add_argument(
+        "--require-approval",
+        dest="all_leads",
+        action="store_false",
+        help="Process approved rows only, overriding the shared approval-gate setting.",
+    )
     parser.add_argument(
         "--lane-scope",
         choices=("all", "design", "automation"),

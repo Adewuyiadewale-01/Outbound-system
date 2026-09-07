@@ -77,6 +77,7 @@
             <span>Today</span>
             <strong id="todayDate">—</strong>
           </div>
+          <button class="icon-button" id="fullScreenBtn" title="Enter full screen" aria-label="Enter full screen"><svg viewBox="0 0 24 24"><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M4 16v4h4"/></svg></button>
           <button class="icon-button" id="closeAppBtn" title="Hide control center" aria-label="Hide control center"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg></button>
         </div>
       </header>
@@ -409,7 +410,8 @@
             </div>
             <div class="lead-settings-grid">
               <label><span class="config-label">Prep time <i class="context-help" tabindex="0" role="note" aria-label="About preparation time" data-tooltip="The local time when autonomous Lead Review preparation should begin.">!</i></span><input id="leadPrepTime" type="time" value="14:00"></label>
-              <label><span class="config-label">Base volume <i class="context-help" tabindex="0" role="note" aria-label="About base volume" data-tooltip="The number of company groups selected in the first and normally only preparation batch.">!</i></span><input id="leadPrepVolume" type="number" min="1" max="500" value="50"></label>
+              <label><span class="config-label">Base volume <i class="context-help" tabindex="0" role="note" aria-label="About base volume" data-tooltip="The number of company groups prepared each day. The standard workflow prepares 60: 30 Design and 30 Automation.">!</i></span><input id="leadPrepVolume" type="number" min="1" max="500" value="60"></label>
+              <label><span class="config-label">Lead approval <i class="context-help" tabindex="0" role="note" aria-label="About lead approval" data-tooltip="Disabled by default: every prepared lead is processed in its assigned lane. Enable it when you want processing to wait for approved rows only.">!</i></span><select id="leadPrepApprovalGate"><option value="disabled">Disabled · process all prepared leads</option><option value="enabled">Enabled · process approved leads only</option></select></label>
               <label><span class="config-label">Archive overlap scan <i class="context-help" tabindex="0" role="note" aria-label="About archive overlap scan" data-tooltip="Detection-only identity scan against archived research. It never reuses research or consumes archive entries during preparation.">!</i></span><select id="leadPrepOverlapScanMode"><option value="auto">Automatic</option><option value="off">Disabled</option></select></label>
               <label><span class="config-label">Fresh-volume top-ups <i class="context-help" tabindex="0" role="note" aria-label="About fresh-volume top-ups" data-tooltip="When enabled, overlap-driven replacement waves restore the fresh target. Disable it to accept one base batch and settle for the day.">!</i></span><select id="leadPrepTopUpMode"><option value="auto">Enabled</option><option value="off">Disabled · one batch only</option></select></label>
               <button class="secondary-btn obf-save-btn" id="leadPrepSaveBtn">

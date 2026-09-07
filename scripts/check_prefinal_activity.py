@@ -111,10 +111,94 @@ DEFER_ACTIVITY_REASONS = {
 }
 SKIP_ACTIVITY_REASONS = {"invalid_profile_or_404"}
 PENDING_404_STATUS = "retry_pending_404"
+DEFAULT_MAX_TARGET_ATTEMPTS = 4
 
 
 def clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _parse_positive_int(value: Any, default: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def next_activity_retry_record(
+    previous: Optional[Dict[str, Any]],
+    *,
+    target: Dict[str, Any],
+    reason: str,
+    danger: str,
+    max_attempts: int,
+) -> Dict[str, Any]:
+    """Build the durable retry state for one profile-level activity failure."""
+    prior = previous or {}
+    attempts = _parse_positive_int(prior.get("attempts")) + 1
+    return {
+        "attempts": attempts,
+        "max_attempts": max_attempts,
+        "exhausted": attempts >= max_attempts,
+        "last_reason": clean_text(reason),
+        "last_danger": clean_text(danger),
+        "profile_url": clean_text(target.get("profile_url")),
+        "company": clean_text(target.get("company")),
+        "person_slot": clean_text(target.get("prefix")),
+        "last_attempt_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def persist_activity_retry_attempt(
+    queue_fingerprint: str,
+    *,
+    target: Dict[str, Any],
+    reason: str,
+    danger: str,
+    max_attempts: int,
+) -> Dict[str, Any]:
+    """Persist retry accounting so the cap survives dates and worker restarts."""
+    batch = load_batch(queue_fingerprint)
+    retry_state = dict(batch.get("activity_retry_state") or {})
+    record = next_activity_retry_record(
+        retry_state.get(target["key"]),
+        target=target,
+        reason=reason,
+        danger=danger,
+        max_attempts=max_attempts,
+    )
+    retry_state[target["key"]] = record
+    update_batch_status(
+        queue_fingerprint,
+        clean_text(batch.get("status")) or "activity_in_progress",
+        activity_retry_state=retry_state,
+    )
+    return record
+
+
+def persist_terminal_activity_issue(
+    queue_fingerprint: str,
+    *,
+    target: Dict[str, Any],
+    terminal_reason: str,
+    retry_record: Dict[str, Any],
+) -> None:
+    """Make an exhausted profile immediately ineligible for future sessions."""
+    batch = load_batch(queue_fingerprint)
+    issues = dict(batch.get("activity_issues") or {})
+    issues[target["key"]] = {
+        "terminal": True,
+        "terminal_reason": clean_text(terminal_reason),
+        "profile_url": clean_text(target.get("profile_url")),
+        "recorded_at": datetime.now().isoformat(timespec="seconds"),
+        "attempts": _parse_positive_int(retry_record.get("attempts")),
+        "last_reason": clean_text(retry_record.get("last_reason")),
+    }
+    update_batch_status(
+        queue_fingerprint,
+        clean_text(batch.get("status")) or "activity_in_progress",
+        activity_issues=issues,
+    )
 
 
 def normalize_url(value: Any) -> str:
@@ -1430,6 +1514,8 @@ def finalize_prepared_session(
                     "terminal_reason": state.get("targets", {}).get(key, {}).get("terminal_reason", ""),
                     "profile_url": state.get("targets", {}).get(key, {}).get("profile_url", ""),
                     "recorded_at": state.get("targets", {}).get(key, {}).get("recorded_at", ""),
+                    "attempts": state.get("targets", {}).get(key, {}).get("attempt", ""),
+                    "max_attempts": state.get("targets", {}).get(key, {}).get("max_attempts", ""),
                 }
                 if key in current_terminal_issue_keys else persisted_issues.get(key, {})
             )
@@ -1938,6 +2024,22 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             retryable_reason = hard_reason or (reason_text if reason_text in DEFER_ACTIVITY_REASONS else "")
             if retryable_reason:
                 event_type = "target_activity_retryable_error" if hard_reason else "target_activity_deferred"
+                retry_record = next_activity_retry_record(
+                    (queue_batch.get("activity_retry_state") or {}).get(target["key"]),
+                    target=target,
+                    reason=retryable_reason,
+                    danger=clean_text(detail.get("danger")),
+                    max_attempts=args.max_target_attempts,
+                )
+                if not args.dry_run:
+                    retry_record = persist_activity_retry_attempt(
+                        queue_fingerprint,
+                        target=target,
+                        reason=retryable_reason,
+                        danger=clean_text(detail.get("danger")),
+                        max_attempts=args.max_target_attempts,
+                    )
+                    queue_batch.setdefault("activity_retry_state", {})[target["key"]] = retry_record
                 emit_progress(
                     date_value,
                     event_type,
@@ -1945,6 +2047,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     target=target,
                     reason=retryable_reason,
                     danger=clean_text(detail.get("danger")),
+                    attempt=retry_record["attempts"],
+                    max_attempts=args.max_target_attempts,
                 )
                 if not args.dry_run:
                     journal_event(
@@ -1956,7 +2060,50 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                         danger=clean_text(detail.get("danger")),
                         detail=activity_evidence(target["profile_url"], detail),
                         plan=plan_item,
+                        attempt=retry_record["attempts"],
+                        max_attempts=args.max_target_attempts,
                     )
+                if retry_record["exhausted"]:
+                    terminal_reason = f"activity_retry_limit_reached:{retryable_reason}"
+                    evidence = activity_evidence(target["profile_url"], detail)
+                    record = {
+                        **target,
+                        "activity_value": "",
+                        "status": "terminal_error",
+                        "terminal_reason": terminal_reason,
+                        "retryable": False,
+                        "attempt": retry_record["attempts"],
+                        "max_attempts": args.max_target_attempts,
+                        "activity_evidence": evidence,
+                        "plan": plan_item,
+                        "recorded_at": datetime.now().isoformat(timespec="seconds"),
+                    }
+                    state.setdefault("targets", {})[target["key"]] = record
+                    if not args.dry_run:
+                        persist_terminal_activity_issue(
+                            queue_fingerprint,
+                            target=target,
+                            terminal_reason=terminal_reason,
+                            retry_record=retry_record,
+                        )
+                        save_session_state(date_value, state)
+                        journal_event(
+                            date_value,
+                            "target_activity_retry_exhausted",
+                            **record,
+                        )
+                    completed += 1
+                    consecutive_hard_failures = 0
+                    emit_progress(
+                        date_value,
+                        "target_retry_exhausted",
+                        processed=index + 1,
+                        completed=completed,
+                        target=target,
+                        reason=terminal_reason,
+                        attempt=retry_record["attempts"],
+                    )
+                    continue
                 if not hard_reason:
                     consecutive_hard_failures = 0
                     continue
@@ -2166,6 +2313,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                         "terminal_reason": record.get("terminal_reason", ""),
                         "profile_url": record.get("profile_url", ""),
                         "recorded_at": record.get("recorded_at", ""),
+                        "attempts": record.get("attempt", ""),
+                        "max_attempts": record.get("max_attempts", ""),
                     }
                     for key, record in state.get("targets", {}).items()
                     if record.get("status") == "terminal_error"
@@ -2190,6 +2339,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                         "terminal_reason": record.get("terminal_reason", ""),
                         "profile_url": record.get("profile_url", ""),
                         "recorded_at": record.get("recorded_at", ""),
+                        "attempts": record.get("attempt", ""),
+                        "max_attempts": record.get("max_attempts", ""),
                     }
                     for key, record in state.get("targets", {}).items()
                     if record.get("status") == "terminal_error"
@@ -2369,6 +2520,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--activity-timeout", type=float, default=180.0)
     parser.add_argument("--activity-retries", type=int, default=1)
     parser.add_argument("--max-consecutive-hard-failures", type=int, default=3)
+    parser.add_argument(
+        "--max-target-attempts",
+        type=int,
+        default=DEFAULT_MAX_TARGET_ATTEMPTS,
+        help="Terminally skip one profile after this many unresolved Activity Check attempts (default: 4).",
+    )
     parser.add_argument("--activity-fixture", default="")
     parser.add_argument("--test-synthetic-activity", action="store_true", help="Test only: generate deterministic synthetic activity evidence; requires test destinations.")
     parser.add_argument("--queue-fingerprint", default="", help="Run one explicit queued batch instead of the oldest open batch.")
@@ -2396,6 +2553,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         parser.error("--final-bridge-threshold must be between 0 and 1.")
     if args.prospects_bridge_delay_sec < 0:
         parser.error("--prospects-bridge-delay-sec must be >= 0.")
+    if args.max_target_attempts < 1:
+        parser.error("--max-target-attempts must be >= 1.")
     if args.worker_id and not args.activity_only:
         parser.error("--worker-id requires --activity-only so the prepared assignment cannot change.")
     if args.finalize_only and not args.activity_only:
