@@ -10,7 +10,7 @@
       document.documentElement.classList.add('electron-shell');
     }
   </script>
-  <link rel="stylesheet" href="dashboard.css?v=preview-31">
+  <link rel="stylesheet" href="dashboard.css?v=execution-row-34">
 </head>
 <body>
   <div class="app-container open" id="appContainer">
@@ -666,11 +666,21 @@
         </section>
 
         <section class="page-view" data-page="post-engagement">
-          <article class="panel pe-command">
+          <article class="panel pe-command progress-panel">
             <div class="pe-command-copy">
               <span class="section-kicker">Daily campaign</span>
               <h2 id="peStatusTitle">Waiting for a source post</h2>
               <p id="peStatusDetail">Add a recently published LinkedIn post to build today’s reactor pool.</p>
+            </div>
+            <div class="pe-completion"><strong id="peCompletionPercent">0%</strong><span id="peCompletionDetail">Engagement completion · awaiting daily target</span></div>
+            <div class="pe-phase-progress" id="pePhaseProgress" role="progressbar" aria-label="Daily engagement completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+            <div class="pe-phase-labels" id="pePhaseLabels"></div>
+            <div class="pe-execution-row" aria-live="polite">
+              <div><span>Working on</span><strong id="peExecutionProfile">—</strong></div>
+              <div><span>Current action</span><strong id="peExecutionAction">Idle</strong></div>
+              <div><span>Navigation</span><strong id="peExecutionMethod">—</strong></div>
+              <div><span>Fallback reason</span><strong id="peExecutionReason">—</strong></div>
+              <small id="peExecutionUpdated">No execution recorded</small>
             </div>
             <div class="pe-command-actions">
               <span class="obf-status-pill neutral" id="peStatusPill">Waiting</span>
@@ -694,7 +704,7 @@
             <div class="panel-heading compact"><div><span class="section-kicker">Source posts</span><h2>Build today’s candidate pool</h2></div></div>
             <div class="pe-source-form">
               <input id="peSourceUrl" type="url" placeholder="Paste a LinkedIn post URL">
-              <select id="peSourceCdpAccount" aria-label="CDP lane for this campaign"><option value="automation">Automation lane · 18801</option><option value="design">Design lane · 18800</option></select>
+              <select id="peSourceCdpAccount" aria-label="Account for this campaign"><option value="automation">Automation account</option><option value="design">Design account</option></select>
               <button class="primary-btn" id="peAddSourceBtn">Add post</button>
             </div>
             <div class="pe-source-list" id="peSourceList"><div class="empty-state">No source posts added today.</div></div>
@@ -951,6 +961,6 @@
       </div>
     </section>
   </div>
-  <script src="drawer.js?v=local-snapshot-15"></script>
+  <script src="drawer.js?v=execution-row-19"></script>
 </body>
 </html>

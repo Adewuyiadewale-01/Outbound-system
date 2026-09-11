@@ -8,6 +8,12 @@ requests require the explicit `--execute` switch.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import functools
+import inspect
+import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -40,6 +46,64 @@ LEDGER_PATH = STATE_DIR / "daily_action_ledger.json"
 PENDING_ACTIONS_PATH = STATE_DIR / "pending_final_actions.json"
 GEO_PATH = ROOT / "config" / "post_engagement_geography.json"
 TZ = ZoneInfo("Africa/Lagos")
+ACTION_ACCOUNT = ContextVar("post_engagement_account", default=None)
+RUNNER_LOCK_PATH = STATE_DIR / "runner.lock"
+
+
+def action_account() -> str:
+    return ACTION_ACCOUNT.get() or load_config()["cdp_account"]
+
+
+@contextmanager
+def campaign_lock():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with RUNNER_LOCK_PATH.open("a+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Post Engagement is already running. Pause it before changing the campaign.")
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def exclusive_campaign(function):
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        with campaign_lock():
+            params = inspect.signature(function).bind_partial(*args, **kwargs).arguments
+            day = params.get("day") or now().date().isoformat()
+            saved = read_json(campaign_path(day), {})
+            account = params.get("cdp_account") or saved.get("cdp_account") or load_config()["cdp_account"]
+            token = ACTION_ACCOUNT.set(account)
+            try:
+                return function(*args, **kwargs)
+            finally:
+                ACTION_ACCOUNT.reset(token)
+    return wrapped
+
+
+def runner_active() -> bool:
+    try:
+        with campaign_lock():
+            return False
+    except RuntimeError:
+        return True
+
+
+def execution_event(campaign, candidate=None, *, action, method=None, reason=None):
+    previous = campaign.get("execution", {})
+    changed = candidate is not None and previous.get("profile_url") != candidate.get("profile_url")
+    campaign["execution"] = {
+        "profile_name": (candidate or {}).get("name") or ("LinkedIn member" if candidate else previous.get("profile_name", "")),
+        "profile_url": (candidate or {}).get("profile_url", previous.get("profile_url", "")),
+        "action": action,
+        "navigation_method": method if method is not None else ("" if changed else previous.get("navigation_method", "")),
+        "fallback_reason": reason if reason is not None else ("" if changed else previous.get("fallback_reason", "")),
+        "updated_at": now().isoformat(),
+    }
+    save_campaign(campaign)
 
 DEFAULT_CONFIG = {
     "enabled": False,
@@ -73,7 +137,7 @@ DEFAULT_CONFIG = {
     "obf_style_diversions": True,
 }
 
-PROFILE_PARSER_VERSION = 2
+PROFILE_PARSER_VERSION = 4
 ACTIVITY_ASSESSMENT_VERSION = 1
 
 CDP_ACCOUNTS = {
@@ -95,8 +159,11 @@ def read_json(path: Path, fallback: Any) -> Any:
 
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False, encoding="utf-8") as handle:
+        temp = Path(handle.name)
+        handle.write(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     temp.replace(path)
 
 
@@ -115,6 +182,7 @@ def read_daily_ledger() -> Dict[str, Any]:
 def ledger_has(day: str, action: str, profile_url: str, post_urn: str = "") -> bool:
     return any(
         event.get("day") == day
+        and event.get("account") == action_account()
         and event.get("action") == action
         and event.get("profile_url") == profile_url
         and event.get("post_urn", "") == post_urn
@@ -127,14 +195,14 @@ def record_ledger_action(day: str, action: str, profile_url: str, *, post_urn: s
         return
     ledger = read_daily_ledger()
     ledger["events"].append({
-        "day": day, "action": action, "profile_url": profile_url,
+        "day": day, "action": action, "profile_url": profile_url, "account": action_account(),
         "post_urn": post_urn, "campaign_id": campaign_id, "recorded_at": now().isoformat(),
     })
     write_json(LEDGER_PATH, ledger)
 
 
 def ledger_count(day: str, action: str) -> int:
-    return sum(1 for event in read_daily_ledger()["events"] if event.get("day") == day and event.get("action") == action)
+    return sum(1 for event in read_daily_ledger()["events"] if event.get("day") == day and event.get("action") == action and event.get("account") == action_account())
 
 
 def read_pending_actions() -> Dict[str, Any]:
@@ -145,17 +213,17 @@ def read_pending_actions() -> Dict[str, Any]:
 def defer_final_action(candidate: Dict[str, Any], action: str, campaign: Dict[str, Any]) -> None:
     pending = read_pending_actions()
     profile_url = str(candidate.get("profile_url") or "")
-    if not profile_url or any(item.get("action") == action and item.get("profile_url") == profile_url for item in pending["actions"]):
+    if not profile_url or any(item.get("action") == action and item.get("profile_url") == profile_url and item.get("account") == action_account() for item in pending["actions"]):
         return
     payload = {key: candidate.get(key) for key in ("profile_url", "name", "location", "follower_count", "geography_tier", "region", "activity_counts", "recommendation")}
-    payload.update({"action": action, "deferred_from_day": campaign["day"], "deferred_at": now().isoformat()})
+    payload.update({"action": action, "account": action_account(), "deferred_from_day": campaign["day"], "deferred_at": now().isoformat()})
     pending["actions"].append(payload)
     write_json(PENDING_ACTIONS_PATH, pending)
 
 
 def resolve_deferred_action(action: str, profile_url: str) -> None:
     pending = read_pending_actions()
-    remaining = [item for item in pending["actions"] if not (item.get("action") == action and item.get("profile_url") == profile_url)]
+    remaining = [item for item in pending["actions"] if not (item.get("action") == action and item.get("profile_url") == profile_url and item.get("account") == action_account())]
     if len(remaining) != len(pending["actions"]):
         pending["actions"] = remaining
         write_json(PENDING_ACTIONS_PATH, pending)
@@ -165,6 +233,7 @@ def load_config() -> Dict[str, Any]:
     return {**DEFAULT_CONFIG, **read_json(CONFIG_PATH, {})}
 
 
+@exclusive_campaign
 def save_config(requested: Dict[str, Any]) -> Dict[str, Any]:
     current = load_config()
     allowed = set(DEFAULT_CONFIG)
@@ -215,6 +284,7 @@ def validate_profile_gate(gate: Dict[str, Any]) -> None:
     name = str(gate.get("name") or "").strip()
     location = str(gate.get("location") or "").strip()
     followers = str(gate.get("follower_text") or "").strip()
+    follower_source = str(gate.get("follower_source") or "").strip()
     error = str(gate.get("error") or "").strip()
     if error:
         raise RuntimeError(f"profile_gate_{error}")
@@ -224,6 +294,8 @@ def validate_profile_gate(gate: Dict[str, Any]) -> None:
         raise RuntimeError("profile_gate_invalid_location")
     if not parse_follower_count(followers):
         raise RuntimeError("profile_gate_missing_followers")
+    if follower_source not in {"header", "activity"}:
+        raise RuntimeError("profile_gate_unbounded_follower_source")
 
 
 def classify_location(raw_location: str) -> Dict[str, Any]:
@@ -386,11 +458,13 @@ def new_campaign(day: str, config: Dict[str, Any]) -> Dict[str, Any]:
     target = daily_rng(day, "daily-target").randint(int(config["engagement_min"]), int(config["engagement_max"]))
     deferred_candidates = []
     for deferred in read_pending_actions()["actions"]:
+        if deferred.get("account") != action_account():
+            continue
         candidate = {key: deferred.get(key) for key in ("profile_url", "name", "location", "follower_count", "geography_tier", "region", "activity_counts", "recommendation")}
         candidate.update(status="deferred_final_action", activity_assessment_status="complete", deferred_from_day=deferred.get("deferred_from_day", ""))
         deferred_candidates.append(candidate)
     return {
-        "schema_version": 1, "day": day, "status": "waiting_for_source", "stage": "source_posts",
+        "schema_version": 1, "day": day, "cdp_account": action_account(), "status": "waiting_for_source", "stage": "source_posts",
         "created_at": now().isoformat(), "updated_at": now().isoformat(), "target": target,
         "connection_target": int(config["connection_target"]), "follow_target": int(config["follow_target"]),
         "connection_send_capacity": max(0, int(config["connection_target"]) - connections_used),
@@ -431,11 +505,15 @@ def pause_campaign(day: Optional[str] = None) -> Dict[str, Any]:
     controls = read_json(CONTROL_PATH, {})
     controls[campaign["day"]] = {"action": "pause", "requested_at": now().isoformat()}
     write_json(CONTROL_PATH, controls)
+    # The worker owns campaign writes while active; only signal via control.json.
     campaign.update(status="pause_requested", pause_requested_at=now().isoformat())
-    save_campaign(campaign)
+    if not runner_active():
+        campaign.update(status="paused", stage="paused")
+        save_campaign(campaign)
     return campaign
 
 
+@exclusive_campaign
 def resume_campaign(day: Optional[str] = None) -> Dict[str, Any]:
     campaign = load_campaign(day)
     controls = read_json(CONTROL_PATH, {})
@@ -447,6 +525,7 @@ def resume_campaign(day: Optional[str] = None) -> Dict[str, Any]:
     return campaign
 
 
+@exclusive_campaign
 def archive_and_start_fresh(day: Optional[str] = None, reason: str = "fresh_validation_run") -> Dict[str, Any]:
     """Archive a stopped campaign, seed the day ledger, and create a fresh active run."""
     campaign = load_campaign(day)
@@ -484,6 +563,7 @@ def raise_if_paused(campaign: Dict[str, Any]) -> None:
         raise PauseRequested()
 
 
+@exclusive_campaign
 def add_source(url: str, day: Optional[str] = None, cdp_account: Optional[str] = None) -> Dict[str, Any]:
     if not re.match(r"^https?://", url): raise ValueError("A full LinkedIn post URL is required")
     campaign = load_campaign(day)
@@ -575,8 +655,8 @@ SOURCE_REACTOR_SNAPSHOT_JS = r"""
 
 PROFILE_GATE_JS = r"""
 (() => {
-  // LinkedIn's global navigation precedes the profile in DOM order. Keep reads
-  // inside main and anchor metadata on Contact info. OBF owns action handling.
+  // Keep each field in a deliberately bounded area. The header owns identity
+  // data; Activity is the permitted follower-count fallback.
   const main=document.querySelector('main');
   const text=e=>(e?.innerText||e?.textContent||'').replace(/\s+/g,' ').trim();
   const vis=e=>{if(!e)return false;const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
@@ -586,13 +666,42 @@ PROFILE_GATE_JS = r"""
   const contactP=contact.closest('p');
   const metadataRow=contactP?.parentElement;
   const locationEl=Array.from(metadataRow?.children||[]).find(e=>e.matches?.('p')&&e!==contactP&&vis(e)&&text(e));
-  let detailsRoot=metadataRow;
-  while(detailsRoot&&detailsRoot!==main&&!Array.from(detailsRoot.querySelectorAll('p')).some(e=>vis(e)&&/\bfollowers?\b/i.test(text(e))))detailsRoot=detailsRoot.parentElement;
-  const followerEl=Array.from(detailsRoot?.querySelectorAll('p')||[]).find(e=>vis(e)&&/\bfollowers?\b/i.test(text(e)));
-  const headings=Array.from(main.querySelectorAll('h1,h2')).filter(e=>vis(e)&&text(e)&&!/\bnotifications?\b/i.test(text(e)));
-  const nameEl=headings.find(e=>detailsRoot?.contains(e))||headings[0];
-  const connectionEl=Array.from(detailsRoot?.querySelectorAll('p,span')||[]).filter(e=>vis(e)&&/\b\d[\d,]*\+?\s+connections?\b/i.test(text(e))).sort((a,b)=>text(a).length-text(b).length)[0];
-  return JSON.stringify({name:text(nameEl),location:text(locationEl),follower_text:text(followerEl),connection_text:text(connectionEl),contact_info_text:text(contact),page_url:location.href});
+  const actionPattern=/\b(follow|connect|message|more|save in sales navigator|visit my website|book an appointment)\b/i;
+  const actions=root=>Array.from(root?.querySelectorAll('button,a,[role="button"]')||[]).filter(e=>vis(e)&&actionPattern.test(`${text(e)} ${e.getAttribute('aria-label')||''}`));
+  const headings=root=>Array.from(root?.querySelectorAll('h1,h2')||[]).filter(e=>vis(e)&&text(e)&&!/\bnotifications?\b/i.test(text(e)));
+  const followerMatches=root=>Array.from(root?.querySelectorAll('p,span')||[]).filter(e=>vis(e)&&/\bfollowers?\b/i.test(text(e))).sort((a,b)=>text(a).length-text(b).length);
+
+  // Contact info belongs to the profile header section. Search no farther
+  // than that section when deriving the smaller card shown in the UI.
+  const headerSection=contact.closest('section');
+  if(!headerSection||!main.contains(headerSection))return JSON.stringify({error:'profile_header_section_missing',page_url:location.href});
+  let headerCard=metadataRow;
+  while(headerCard){
+    if(headings(headerCard).length&&actions(headerCard).length)break;
+    if(headerCard===headerSection){headerCard=null;break;}
+    headerCard=headerCard.parentElement;
+  }
+  if(!headerCard)return JSON.stringify({error:'profile_header_missing',page_url:location.href});
+  const nameEl=headings(headerCard)[0];
+  const headerFollower=followerMatches(headerCard)[0];
+
+  // Some profiles omit followers from the header. Permit the explicit
+  // Activity section only, excluding follower text inside an Activity post.
+  const activityHeading=Array.from(main.querySelectorAll('h1,h2,h3,[role="heading"]')).find(e=>vis(e)&&text(e)==='Activity'&&e.closest('section')&&e.closest('section')!==headerSection);
+  const activitySection=activityHeading?.closest('section');
+  const activityFollower=Array.from(activitySection?.querySelectorAll('p,span')||[])
+    .filter(e=>vis(e)&&/\bfollowers?\b/i.test(text(e))&&!e.closest('[data-view-name="feed-full-update"],article,[data-urn]'))
+    .sort((a,b)=>a.getBoundingClientRect().top-b.getBoundingClientRect().top||text(a).length-text(b).length)[0];
+  const followerEl=headerFollower||activityFollower;
+  const followerSource=headerFollower?'header':activityFollower?'activity':'missing';
+  return JSON.stringify({
+    name:text(nameEl),
+    location:text(locationEl),
+    follower_text:text(followerEl),
+    follower_source:followerSource,
+    contact_info_text:text(contact),
+    page_url:location.href
+  });
 })()
 """
 
@@ -833,6 +942,9 @@ def review_recent_activity(cdp: Any, simulator: Any) -> Dict[str, int]:
 
 
 def inspect_candidate(cdp: Any, simulator: Any, candidate: Dict[str, Any], config: Dict[str, Any]) -> None:
+    campaign = getattr(cdp, "engagement_campaign", None)
+    if campaign is not None:
+        execution_event(campaign, candidate, action="Opening profile", method="Direct URL", reason="")
     _navigate(cdp, candidate["profile_url"])
     gate = _evaluate_json(cdp, PROFILE_GATE_JS)
     validate_profile_gate(gate)
@@ -846,6 +958,8 @@ def inspect_candidate(cdp: Any, simulator: Any, candidate: Dict[str, Any], confi
     )
     from linkedin_helper import _open_profile_activity_from_profile, _wait_for_activity_destination, _wait_for_activity_feed_state
     try:
+        if campaign is not None:
+            execution_event(campaign, candidate, action="Opening activity", method="DOM", reason="")
         navigation = _open_profile_activity_from_profile(cdp)
         destination = _wait_for_activity_destination(cdp, candidate["profile_url"].rstrip("/"), "posts", timeout=8) if navigation.get("clicked") else {}
         feed = _wait_for_activity_feed_state(cdp, timeout=15) if destination.get("arrived") else {}
@@ -854,6 +968,8 @@ def inspect_candidate(cdp: Any, simulator: Any, candidate: Dict[str, Any], confi
         candidate["posts_navigation"] = {"via": "selector_based", "feed_readiness": feed}
         cdp.post_engagement_navigation = [{"feed_readiness": feed}]
     except (RuntimeError, TimeoutError) as error:
+        if campaign is not None:
+            execution_event(campaign, candidate, action="Opening activity", method="Direct URL · fallback", reason=str(error))
         _navigate(cdp, candidate["profile_url"].rstrip("/") + "/recent-activity/all/")
         candidate["posts_navigation"] = {"via": "direct_url_fallback", "reason": str(error)}
     candidate["activity_review"] = review_recent_activity(cdp, simulator)
@@ -962,6 +1078,10 @@ def assess_engaged_candidate(session: Any, candidate: Dict[str, Any], config: Di
     candidate["activity_assessment_started_at"] = now().isoformat()
     candidate["activity_assessment_attempts"] = int(candidate.get("activity_assessment_attempts", 0)) + 1
     try:
+        cdp = getattr(session, "cdp", None)
+        campaign = getattr(cdp, "engagement_campaign", None) if cdp else None
+        if isinstance(campaign, dict):
+            cdp.execution_observer = lambda **event: execution_event(campaign, candidate, **event)
         detail = session.read_activity_detail(
             candidate["profile_url"],
             max_seconds=75,
@@ -970,6 +1090,8 @@ def assess_engaged_candidate(session: Any, candidate: Dict[str, Any], config: Di
             minimum_direct_comments=int(config["comment_threshold"]),
             disable_early_stop=True,
         )
+        if detail.get("error") or detail.get("danger"):
+            raise RuntimeError(f"Activity assessment incomplete: {detail.get('danger') or detail.get('reason') or detail.get('error')}")
         candidate["activity_counts"] = activity_counts(
             detail, int(config["activity_window_days"]) * 24
         )
@@ -983,6 +1105,10 @@ def assess_engaged_candidate(session: Any, candidate: Dict[str, Any], config: Di
         candidate["activity_assessment_status"] = "failed"
         candidate["activity_error"] = str(error)[:500]
         return False
+    finally:
+        cdp = getattr(session, "cdp", None)
+        if cdp is not None:
+            cdp.execution_observer = None
 
 
 def final_action_queue(candidates: Iterable[Dict[str, Any]], campaign: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -991,6 +1117,7 @@ def final_action_queue(candidates: Iterable[Dict[str, Any]], campaign: Dict[str,
         candidate
         for candidate in candidates
         if candidate.get("activity_assessment_status") == "complete"
+        and int(candidate.get("profile_parser_version") or 0) == PROFILE_PARSER_VERSION
         and int((candidate.get("recommendation") or {}).get("assessment_version") or 0)
         == ACTIVITY_ASSESSMENT_VERSION
     ]
@@ -1044,19 +1171,82 @@ def upsert_high_signal(candidate: Dict[str, Any]) -> None:
     write_json(HIGH_SIGNAL_PATH, state)
 
 
+def begin_action(campaign, candidate, action, post_urn=""):
+    campaign["pending_action"] = {
+        "action": action, "profile_url": candidate["profile_url"],
+        "post_urn": post_urn, "account": action_account(),
+        "batch_number": campaign.get("current_batch_number", 1),
+        "started_at": now().isoformat(),
+    }
+    save_campaign(campaign)
+
+
+def reconcile_campaign(campaign):
+    """Recover confirmed writes; ambiguous clicks never become assumed success."""
+    events = read_daily_ledger()["events"]
+    if any(e.get("day") == campaign["day"] and not e.get("account") for e in events):
+        raise RuntimeError("Legacy action ledger has unassigned account records for this day; reconcile account ownership before running.")
+    pending = campaign.get("pending_action")
+    if pending and ledger_has(campaign["day"], pending["action"], pending["profile_url"], pending.get("post_urn", "")):
+        campaign.pop("pending_action", None)
+    scoped = [e for e in events if e.get("day") == campaign["day"] and e.get("account") == action_account()
+              and e.get("campaign_id") == campaign.get("created_at")]
+    for candidate in campaign["candidates"]:
+        matches = [e for e in scoped if e.get("profile_url") == candidate.get("profile_url")]
+        likes = [e for e in matches if e.get("action") == "like"]
+        if likes or any(e.get("action") == "engagement" for e in matches):
+            candidate["status"] = "engaged"
+            candidate["likes_completed"] = max(len(likes), int(candidate.get("likes_completed", 0)))
+            candidate.setdefault("engagement_batch", (pending or {}).get("batch_number", campaign.get("current_batch_number") or 1))
+            record_ledger_action(campaign["day"], "engagement", candidate["profile_url"], campaign_id=campaign.get("created_at", ""))
+        if any(e.get("action") == "connect" for e in matches):
+            candidate["connection_result"] = {"success": True, "status": "recovered_from_ledger"}
+        if any(e.get("action") == "follow" for e in matches):
+            candidate["follow_result"] = "followed"
+    campaign["engaged"] = sum(1 for c in campaign["candidates"] if int(c.get("likes_completed", 0)) > 0)
+    campaign["connections_sent"] = sum(1 for c in campaign["candidates"] if (c.get("connection_result") or {}).get("success"))
+    campaign["followed"] = sum(1 for c in campaign["candidates"] if c.get("follow_result") == "followed")
+    for batch in campaign.get("engagement_batches", []):
+        batch["engaged"] = sum(1 for c in campaign["candidates"] if int(c.get("likes_completed", 0)) > 0 and c.get("engagement_batch") == batch["number"])
+        if batch["engaged"] >= batch["target"]:
+            batch["status"] = "completed"
+            batch.setdefault("completed_at", now().isoformat())
+    batches = campaign.get("engagement_batches", [])
+    upcoming = next((b for b in batches if b.get("status") != "completed"), None)
+    if upcoming and int(upcoming["number"]) > 1 and not upcoming.get("started_at"):
+        previous = next(b for b in batches if int(b["number"]) == int(upcoming["number"])-1)
+        if not campaign.get("next_batch_at") or campaign.get("current_batch_number") != upcoming["number"]:
+            finished = previous.get("completed_at") or now().isoformat()
+            campaign["next_batch_at"] = (datetime.fromisoformat(finished) + timedelta(minutes=int(load_config()["inter_batch_delay_minutes"]))).isoformat()
+            campaign["current_batch_number"] = upcoming["number"]
+    save_campaign(campaign)
+
+
 def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
     config = load_config(); campaign = load_campaign(day)
+    if not execute and (campaign.get("engaged") or campaign.get("connections_sent") or campaign.get("followed")):
+        raise RuntimeError("Audit cannot overwrite a campaign with live outcomes; use a separate day for audit fixtures.")
     if campaign_control(campaign["day"]).get("action") == "pause":
         campaign.update(status="paused", stage="paused")
         save_campaign(campaign)
         return campaign
     if campaign.get("cdp_account"):
         config["cdp_account"] = campaign["cdp_account"]
+    campaign["cdp_account"] = config["cdp_account"]
+    ACTION_ACCOUNT.set(config["cdp_account"])
+    if execute:
+        reconcile_campaign(campaign)
+        if campaign.get("pending_action"):
+            campaign.update(status="needs_reconciliation", stage="uncertain_action")
+            save_campaign(campaign)
+            return campaign
     if not campaign["sources"]: raise RuntimeError("Add at least one source post first")
     campaign.update(status="running",dry_run=not execute,stage="source_collection"); save_campaign(campaign)
     cdp = None
     try:
         cdp, sim, session = _connect_campaign_browser(campaign, config, execute)
+        cdp.engagement_campaign = campaign
+        execution_event(campaign, {"name": "Source posts", "profile_url": ""}, action="Collecting source posts", method="Direct URL", reason="")
         collect_sources(cdp, campaign, config)
         ensure_obf_diversions(campaign, config)
         batch = current_engagement_batch(campaign, config)
@@ -1113,10 +1303,18 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
                     completed = 0
                     for post in eligible_posts:
                         raise_if_paused(campaign)
+                        execution_event(campaign, candidate, action="Verifying and liking post")
+                        begin_action(campaign, candidate, "like", post["post_urn"])
                         if click_like(cdp, post["post_urn"]):
                             completed += 1
                             record_ledger_action(campaign["day"], "like", candidate["profile_url"], post_urn=post["post_urn"], campaign_id=campaign.get("created_at", ""))
+                            candidate["engagement_batch"] = int(batch["number"])
+                            campaign.pop("pending_action", None)
+                            save_campaign(campaign)
                             time.sleep(random.uniform(float(config["action_delay_min_seconds"]), float(config["action_delay_max_seconds"])))
+                        else:
+                            campaign.pop("pending_action", None)
+                            save_campaign(campaign)
                 else:
                     completed = len(eligible_posts)
                 if execute:
@@ -1126,6 +1324,7 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
                     candidate["likes_preview"] = completed
                     candidate["status"] = "dry_run_engagement_ready" if completed else "no_eligible_unliked_posts"
                 if completed:
+                    execution_event(campaign, candidate, action="Assessing recent activity", method="DOM preferred · shared activity reader", reason="")
                     if execute:
                         record_ledger_action(campaign["day"], "engagement", candidate["profile_url"], campaign_id=campaign.get("created_at", ""))
                     engagement_progress += 1
@@ -1149,9 +1348,14 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
                         save_campaign(campaign)
                     campaign["stage"] = "candidate_audit"
                     save_campaign(campaign)
-            except PermissionError:
+            except (PermissionError, PauseRequested):
                 raise
             except Exception as error:
+                if campaign.get("pending_action"):
+                    campaign.update(status="needs_reconciliation", stage="uncertain_action")
+                    campaign["pending_action"]["error"] = str(error)
+                    save_campaign(campaign)
+                    return campaign
                 candidate["attempts"] = int(candidate.get("attempts",0)) + 1
                 candidate["last_error"] = str(error)[:500]
                 candidate["navigation_events"] = getattr(cdp, "post_engagement_navigation", [])
@@ -1180,6 +1384,12 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
             batch.update(status="completed", engaged=batch_progress, completed_at=now().isoformat())
             save_campaign(campaign)
 
+        if execute and engagement_progress < int(campaign["target"]):
+            campaign.update(status="paused_profile_view_limit" if paused_for_quota else "needs_another_post",
+                            stage="engagement_incomplete", engagement_deficit=int(campaign["target"])-engagement_progress)
+            save_campaign(campaign)
+            return campaign
+
         engaged = [c for c in campaign["candidates"] if c.get("status") in {"engaged", "dry_run_engagement_ready", "deferred_final_action"}]
         campaign["stage"] = "recommendation_ranking"; save_campaign(campaign)
         action_queue = final_action_queue(engaged, campaign)
@@ -1191,6 +1401,7 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
         for index, candidate in enumerate(action_queue):
             raise_if_paused(campaign)
             action = (candidate.get("recommendation") or {}).get("action")
+            execution_event(campaign, candidate, action=f"Preparing {action}", method="Direct URL", reason="")
             if action == "follow":
                 if follow_progress >= follow_send_capacity:
                     candidate["final_action_status"] = "deferred_daily_follow_cap"
@@ -1199,6 +1410,7 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
                     continue
                 _navigate(cdp, candidate["profile_url"])
                 if execute:
+                    begin_action(campaign, candidate, "follow")
                     candidate["follow_result"] = "followed" if follow_current_profile(cdp,candidate.get("name","")) else "follow_failed"
                     if candidate["follow_result"] == "followed":
                         campaign["followed"] += 1
@@ -1206,6 +1418,11 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
                         upsert_high_signal(candidate)
                         record_ledger_action(campaign["day"], "follow", candidate["profile_url"], campaign_id=campaign.get("created_at", ""))
                         resolve_deferred_action("follow", candidate["profile_url"])
+                        campaign.pop("pending_action", None)
+                    else:
+                        campaign.update(status="needs_reconciliation", stage="follow_unconfirmed")
+                        save_campaign(campaign)
+                        return campaign
                 else:
                     candidate["follow_preview"] = "would_follow"
                     follow_progress += 1
@@ -1215,6 +1432,7 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
                     defer_final_action(candidate, "connect", campaign)
                     save_campaign(campaign)
                     continue
+                begin_action(campaign, candidate, "connect")
                 result = session.send_connection_only(candidate["profile_url"])
                 sent = bool(result.get("success"))
                 if execute:
@@ -1224,10 +1442,15 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
                     campaign["connections_sent"] += 1
                     record_ledger_action(campaign["day"], "connect", candidate["profile_url"], campaign_id=campaign.get("created_at", ""))
                     resolve_deferred_action("connect", candidate["profile_url"])
+                    campaign.pop("pending_action", None)
+                else:
+                    campaign.update(status="needs_reconciliation", stage="connection_unconfirmed")
+                    save_campaign(campaign)
+                    return campaign
             elif action == "connect":
                 if connection_progress >= connection_send_capacity:
                     candidate["final_action_status"] = "deferred_daily_connection_cap"
-                    defer_final_action(candidate, "connect", campaign)
+                    # Audit previews must not populate the live deferred queue.
                     save_campaign(campaign)
                     continue
                 result={"status":"dry_run_would_send"}
@@ -1260,7 +1483,8 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
             1 for candidate in action_queue
             if (candidate.get("recommendation") or {}).get("action") == "connect"
         )
-        engagement_deficit=max(0,campaign["target"]-engagement_progress); connection_deficit=max(0,campaign["connection_target"]-connection_selected)
+        engagement_deficit=max(0,campaign["target"]-engagement_progress)
+        connection_deficit=max(0,connection_send_capacity-connection_progress)
         complete = not engagement_deficit and not connection_deficit
         final_status = "paused_profile_view_limit" if paused_for_quota else (("dry_run_complete" if complete else "dry_run_needs_another_post") if not execute else ("completed" if complete else "needs_another_post"))
         final_stage = "paused_profile_view_limit" if paused_for_quota else ("dry_run_complete" if not execute and complete else "complete" if complete else "needs_more_sources")
@@ -1277,9 +1501,21 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
         if cdp: cdp.disconnect()
 
 
+@exclusive_campaign
 def run_campaign_schedule(day: Optional[str], execute: bool) -> Dict[str, Any]:
     """Run live engagement windows through their persisted, pause-aware gaps."""
     while True:
+        previous = load_campaign(day)
+        if execute:
+            ACTION_ACCOUNT.set(previous.get("cdp_account") or load_config()["cdp_account"])
+            reconcile_campaign(previous)
+            if previous.get("pending_action"):
+                previous.update(status="needs_reconciliation", stage="uncertain_action")
+                save_campaign(previous)
+                return previous
+        if execute and previous.get("next_batch_at"):
+            if not wait_for_next_batch(previous):
+                return load_campaign(previous["day"])
         campaign = run_campaign(day, execute)
         if not execute or campaign.get("status") != "waiting_next_batch":
             return campaign
@@ -1296,7 +1532,7 @@ def dashboard(day: Optional[str] = None) -> Dict[str, Any]:
         for line in HISTORY_PATH.read_text(encoding="utf-8").splitlines()[-30:]:
             try: history.append(json.loads(line))
             except json.JSONDecodeError: pass
-    return {"config":config,"campaign":campaign,"control":campaign_control(campaign["day"]),"high_signal":read_json(HIGH_SIGNAL_PATH,{"profiles":[]}).get("profiles",[]),"history":list(reversed(history))}
+    return {"is_running": runner_active(), "config":config,"campaign":campaign,"control":campaign_control(campaign["day"]),"high_signal":read_json(HIGH_SIGNAL_PATH,{"profiles":[]}).get("profiles",[]),"history":list(reversed(history))}
 
 
 def main() -> int:
@@ -1311,7 +1547,8 @@ def main() -> int:
     args=parser.parse_args()
     try:
         result=dashboard(args.day) if args.command=="status" else add_source(args.url,args.day,args.cdp_account) if args.command=="add-source" else save_config(json.loads(args.json)) if args.command=="configure" else pause_campaign(args.day) if args.command=="pause" else resume_campaign(args.day) if args.command=="resume" else archive_and_start_fresh(args.day,args.reason) if args.command=="archive-and-fresh" else run_campaign_schedule(args.day,args.execute)
-        print(json.dumps(result,indent=2)); return 0
+        print(json.dumps(result,indent=2))
+        return 2 if args.command == "run" and result.get("status") not in {"completed", "dry_run_complete", "paused", "waiting_next_batch"} else 0
     except Exception as error:
         print(json.dumps({"ok":False,"error":str(error)}),file=sys.stderr); return 1
 

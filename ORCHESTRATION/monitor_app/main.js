@@ -1556,7 +1556,8 @@ ipcMain.handle('read-post-engagement-dashboard', async (event, requested = {}) =
   const result = await runProjectPython('scripts/post_engagement.py', args);
   if (!result.ok) return { config: {}, campaign: {}, history: [], high_signal: [], error: result.stderr || result.stdout };
   try {
-    return { ...JSON.parse(result.stdout), is_running: Boolean(postEngagementProcess) };
+    const state = JSON.parse(result.stdout);
+    return { ...state, is_running: state.is_running || Boolean(postEngagementProcess) };
   } catch (error) {
     return { config: {}, campaign: {}, history: [], high_signal: [], error: error.message };
   }

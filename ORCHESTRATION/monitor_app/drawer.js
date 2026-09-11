@@ -531,8 +531,15 @@ const pageMetadata = {
   }
 };
 
+const selectedPageStorageKey = 'operations-dashboard.selected-page';
+
 function showPage(pageName) {
-  if (!pageMetadata[pageName]) return;
+  if (!Object.prototype.hasOwnProperty.call(pageMetadata, pageName)) return;
+  try {
+    localStorage.setItem(selectedPageStorageKey, pageName);
+  } catch (_) {
+    // Navigation remains available when browser storage is disabled.
+  }
 
   navItems.forEach(item => item.classList.toggle('active', item.dataset.page === pageName));
   pageViews.forEach(view => view.classList.toggle('active', view.dataset.page === pageName));
@@ -2984,8 +2991,14 @@ function peEmptyRow(columns, message) {
 }
 
 function peProfileLink(candidate) {
-  const name = escapeHtmlSafe(candidate.name || candidate.profile_url || 'Unknown profile');
-  return candidate.profile_url ? `<a href="${escapeHtmlSafe(candidate.profile_url)}" target="_blank" rel="noreferrer">${name}</a>` : name;
+  const rawName = String(candidate.name || '').trim();
+  const name = escapeHtmlSafe(rawName && !/^https?:\/\//i.test(rawName) ? rawName : 'LinkedIn member');
+  let url = '';
+  try {
+    const parsed = new URL(candidate.profile_url);
+    if (parsed.protocol === 'https:' && /(^|\.)linkedin\.com$/i.test(parsed.hostname)) url = parsed.href;
+  } catch (_) {}
+  return `<div class="pe-profile-cell"><strong>${name}</strong>${url ? `<a href="${escapeHtmlSafe(url)}" target="_blank" rel="noopener noreferrer">View profile ↗</a>` : '<small>Profile unavailable</small>'}</div>`;
 }
 
 function renderPostEngagement(data) {
@@ -2995,6 +3008,14 @@ function renderPostEngagement(data) {
   const candidates = campaign.candidates || [];
   const sources = campaign.sources || [];
   const status = String(campaign.status || 'waiting_for_source');
+  const execution = campaign.execution || {};
+  document.getElementById('peExecutionProfile').innerText = execution.profile_name || '—';
+  document.getElementById('peExecutionAction').innerText = data.is_running ? (execution.action || titleCaseStatusClient(campaign.stage || 'starting')) : `${titleCaseStatusClient(status)}${execution.action ? ` · last: ${execution.action}` : ''}`;
+  document.getElementById('peExecutionMethod').innerText = execution.navigation_method || '—';
+  document.getElementById('peExecutionReason').innerText = execution.fallback_reason || '—';
+  const executionTime = execution.updated_at ? new Date(execution.updated_at) : null;
+  document.getElementById('peExecutionUpdated').innerText = executionTime && !Number.isNaN(executionTime.valueOf())
+    ? `Last decision ${executionTime.toLocaleString()}${data.is_running ? '' : ' · runner stopped'}` : 'No execution recorded';
   const needsSource = status === 'needs_another_post' || status === 'dry_run_needs_another_post';
   document.getElementById('peStatusTitle').innerText = needsSource ? 'Another source post is needed' : titleCaseStatusClient(status);
   document.getElementById('peStatusDetail').innerText = needsSource
@@ -3006,6 +3027,22 @@ function renderPostEngagement(data) {
   document.getElementById('peEngagedValue').innerText = `${campaign.engaged || 0} / ${campaign.target || '—'}`;
   document.getElementById('peEngagedDetail').innerText = campaign.preview_engaged && !campaign.engaged ? `${campaign.preview_engaged} would be engaged in a live run` : campaign.engagement_deficit ? `${campaign.engagement_deficit} more active profiles needed` : 'unique profiles with at least one new Like';
   const batches = campaign.engagement_batches || [];
+  const dailyTarget = Math.max(0, Number(campaign.target) || 0);
+  const dailyDone = Math.max(0, Number(campaign.engaged) || 0);
+  const percent = dailyTarget ? Math.min(100, Math.floor(dailyDone / dailyTarget * 100)) : 0;
+  document.getElementById('peCompletionPercent').innerText = `${percent}%`;
+  document.getElementById('peCompletionDetail').innerText = dailyTarget
+    ? `${dailyDone} / ${dailyTarget} profiles engaged · engagement completion`
+    : 'Engagement completion · awaiting daily target';
+  const phaseCount = Math.max(1, Math.min(6, Number(config.engagement_batch_count) || 3));
+  const phases = batches.length ? batches : Array.from({length: phaseCount}, (_, i) => ({number: i + 1, target: 0, engaged: 0}));
+  const progress = document.getElementById('pePhaseProgress');
+  progress.setAttribute('aria-valuenow', String(percent));
+  progress.innerHTML = phases.map(batch => {
+    const fill = batch.target > 0 ? Math.min(100, Math.max(0, Number(batch.engaged || 0) / batch.target * 100)) : 0;
+    return `<div class="pe-phase-track" style="flex:${Math.max(1, Number(batch.target) || 1)}"><div style="width:${fill}%"></div></div>`;
+  }).join('');
+  document.getElementById('pePhaseLabels').innerHTML = phases.map(batch => `<div style="flex:${Math.max(1, Number(batch.target) || 1)}"><strong>Phase ${escapeHtmlSafe(String(batch.number))}</strong><span>${Number(batch.engaged) || 0} / ${Number(batch.target) || '—'} · ${escapeHtmlSafe(titleCaseStatusClient(batch.status || 'pending'))}</span></div>`).join('');
   const currentBatchNumber = Number(campaign.current_batch_number || 0);
   const activeBatch = batches.find(batch => Number(batch.number) === currentBatchNumber) || batches.find(batch => batch.status !== 'completed');
   document.getElementById('peBatchValue').innerText = activeBatch ? `Batch ${activeBatch.number} / ${batches.length}` : (batches.length ? `${batches.length} complete` : '—');
@@ -3026,7 +3063,14 @@ function renderPostEngagement(data) {
     resumeButton.innerText = status === 'failed' ? 'Retry from checkpoint' : 'Resume';
   }
 
-  document.getElementById('peSourceList').innerHTML = sources.length ? sources.map(source => `<div class="pe-source-row"><a href="${escapeHtmlSafe(source.resolved_url || source.submitted_url)}" target="_blank" rel="noreferrer">${escapeHtmlSafe(source.resolved_url || source.submitted_url)}</a><span>${source.profiles_collected || 0} / ${source.reaction_count || '—'}</span><span class="obf-status-pill ${source.status === 'collected' ? 'success' : source.status === 'failed' ? 'warning' : 'neutral'}">${escapeHtmlSafe(titleCaseStatusClient(source.status))}</span></div>`).join('') : '<div class="empty-state">No source posts added today.</div>';
+  document.getElementById('peSourceList').innerHTML = sources.length ? sources.map((source, index) => {
+    let url = '';
+    try {
+      const parsed = new URL(source.resolved_url || source.submitted_url);
+      if (parsed.protocol === 'https:' && /(^|\.)(linkedin\.com|lnkd\.in)$/i.test(parsed.hostname)) url = parsed.href;
+    } catch (_) {}
+    return `<div class="pe-source-row"><div class="pe-source-identity"><span class="pe-source-icon" aria-hidden="true">in</span><div><strong>Source post ${index + 1}</strong>${url ? `<a href="${escapeHtmlSafe(url)}" target="_blank" rel="noopener noreferrer">Open LinkedIn post ↗</a>` : '<small>Post link unavailable</small>'}</div></div><div class="pe-source-count"><strong>${Number(source.profiles_collected) || 0}${source.reaction_count ? ` / ${Number(source.reaction_count) || 0}` : ''}</strong><small>profiles collected</small></div><span class="obf-status-pill ${source.status === 'collected' ? 'success' : source.status === 'failed' ? 'warning' : 'neutral'}">${escapeHtmlSafe(titleCaseStatusClient(source.status))}</span></div>`;
+  }).join('') : '<div class="empty-state">No source posts added today.</div>';
 
   document.getElementById('peAuditBody').innerHTML = candidates.length ? candidates.map(candidate => `<tr><td>${peProfileLink(candidate)}</td><td>${escapeHtmlSafe(candidate.location || '—')}</td><td>${candidate.follower_count ?? '—'}</td><td>${(candidate.posts || []).length}</td><td>${escapeHtmlSafe(candidate.very_active ? 'Very active' : candidate.activity_counts ? 'Below threshold' : 'Not measured')}</td><td>${escapeHtmlSafe(titleCaseStatusClient(candidate.status))}</td></tr>`).join('') : peEmptyRow(6, 'Candidates appear after source extraction.');
   const engaged = candidates.filter(candidate => candidate.likes_assigned || candidate.likes_completed || candidate.likes_preview);
@@ -3176,6 +3220,12 @@ async function syncWatcherState() {
 
 // Initialization
 window.addEventListener('DOMContentLoaded', () => {
+  let savedPage = 'overview';
+  try {
+    const stored = localStorage.getItem(selectedPageStorageKey);
+    if (Object.prototype.hasOwnProperty.call(pageMetadata, stored)) savedPage = stored;
+  } catch (_) {}
+  showPage(savedPage);
   if (todayDate) {
     todayDate.innerText = formatHeaderDate();
   }

@@ -3,6 +3,7 @@ import pytest
 from scripts.post_engagement import (
     ACTIVITY_ASSESSMENT_VERSION,
     DEFAULT_CONFIG,
+    PROFILE_PARSER_VERSION,
     assess_engaged_candidate,
     choose_like_target,
     classify_location,
@@ -72,13 +73,19 @@ def test_any_activity_signal_qualifies():
 
 def test_profile_gate_rejects_global_ui_and_contact_labels():
     with pytest.raises(RuntimeError, match="invalid_name"):
-        validate_profile_gate({"name": "0 notifications", "location": "New York, United States", "follower_text": "100 followers"})
+        validate_profile_gate({"name": "0 notifications", "location": "New York, United States", "follower_text": "100 followers", "follower_source": "header"})
     with pytest.raises(RuntimeError, match="invalid_location"):
-        validate_profile_gate({"name": "Ada Lovelace", "location": "Contact info", "follower_text": "100 followers"})
+        validate_profile_gate({"name": "Ada Lovelace", "location": "Contact info", "follower_text": "100 followers", "follower_source": "header"})
 
 
 def test_profile_gate_accepts_valid_profile_metadata():
-    validate_profile_gate({"name": "Ada Lovelace", "location": "New York, United States", "follower_text": "35,345 followers"})
+    validate_profile_gate({"name": "Ada Lovelace", "location": "New York, United States", "follower_text": "35,345 followers", "follower_source": "header"})
+    validate_profile_gate({"name": "Ada Lovelace", "location": "New York, United States", "follower_text": "35,345 followers", "follower_source": "activity"})
+
+
+def test_profile_gate_rejects_unbounded_follower_source():
+    with pytest.raises(RuntimeError, match="unbounded_follower_source"):
+        validate_profile_gate({"name": "Ada Lovelace", "location": "New York, United States", "follower_text": "35,345 followers", "follower_source": "missing"})
 
 
 class FakeActivitySession:
@@ -116,6 +123,7 @@ def test_final_action_queue_contains_only_complete_saved_recommendations():
         "profile_url": "https://www.linkedin.com/in/complete/",
         "geography_tier": 1,
         "activity_counts": {"reactions": 5, "comments": 0, "posts": 0},
+        "profile_parser_version": PROFILE_PARSER_VERSION,
         "activity_assessment_status": "complete",
         "recommendation": {"action": "connect", "assessment_version": ACTIVITY_ASSESSMENT_VERSION},
     }
@@ -136,6 +144,7 @@ def test_final_action_queue_randomly_interleaves_without_three_action_streaks():
                 "profile_url": f"https://www.linkedin.com/in/{action}-{index}/",
                 "geography_tier": 1,
                 "activity_counts": {"reactions": 5, "comments": 0, "posts": 0},
+                "profile_parser_version": PROFILE_PARSER_VERSION,
                 "activity_assessment_status": "complete",
                 "recommendation": {
                     "action": action,

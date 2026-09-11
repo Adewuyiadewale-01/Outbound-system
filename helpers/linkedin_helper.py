@@ -2941,8 +2941,14 @@ def read_activity_tabs_detail(
             return ""
         return ""
 
+    def report_navigation(method, action, reason=""):
+        callback = getattr(cdp, "execution_observer", None)
+        if callable(callback):
+            callback(method=method, action=action, reason=reason)
+
     if selector_based:
         try:
+            report_navigation("Direct URL", "Opening profile for assessment")
             cdp.navigate(profile_base + "/", wait_load=False, timeout=min(8, max(2, remaining())))
         except (TimeoutError, RuntimeError) as exc:
             profile_activity_open_result = {"found": False, "clicked": False, "via": "profile_page", "error": str(exc)}
@@ -2960,6 +2966,7 @@ def read_activity_tabs_detail(
                 return {**invalid, "source_tab": "profile", "tabs": tabs}
             if ready_state.get("ready") and bounded_pause(0.5, 1.25):
                 try:
+                    report_navigation("DOM", "Opening profile activity")
                     profile_activity_open_result = _open_profile_activity_from_profile(cdp, timeout=min(25, max(0, remaining() - 4)))
                     if profile_activity_open_result.get("clicked"):
                         bounded_pause(0.75, 1.5)
@@ -2984,6 +2991,7 @@ def read_activity_tabs_detail(
         open_result: Dict[str, Any]
         if selector_based and profile_activity_open_result.get("clicked"):
             try:
+                report_navigation("DOM", f"Opening {tab_label}")
                 open_result = _open_activity_tab(cdp, tab_label)
             except (TimeoutError, RuntimeError) as exc:
                 open_result = {"found": False, "clicked": False, "via": "selector_error", "error": str(exc)}
@@ -2991,6 +2999,7 @@ def read_activity_tabs_detail(
                 open_result = {**open_result, "disallowed_url_after_selector": True}
             if not open_result.get("found") or open_result.get("disallowed_url_after_selector"):
                 try:
+                    report_navigation("Direct URL · fallback", f"Opening {tab_label}", open_result.get("error") or "Activity tab control missing or reached an unsupported destination")
                     cdp.navigate(activity_url, wait_load=False, timeout=min(8, max(2, remaining())))
                 except (TimeoutError, RuntimeError) as exc:
                     return timeout_result(tab_key, "navigation_failed_or_timed_out", error_detail=str(exc), open_result=open_result)
@@ -3017,6 +3026,7 @@ def read_activity_tabs_detail(
                     return {**navigation_state["invalid"], "source_tab": tab_key, "tabs": tabs, "navigation_state": navigation_state}
                 if not navigation_state.get("arrived"):
                     try:
+                        report_navigation("Direct URL · fallback", f"Opening {tab_label}", "DOM navigation did not reach the requested activity tab")
                         cdp.navigate(activity_url, wait_load=False, timeout=min(8, max(2, remaining())))
                     except (TimeoutError, RuntimeError) as exc:
                         return timeout_result(tab_key, "navigation_failed_or_timed_out", error_detail=str(exc), open_result=open_result, navigation_state=navigation_state)
@@ -3033,6 +3043,7 @@ def read_activity_tabs_detail(
                     open_result = {**open_result, "fallback_via": "direct_activity_url", "url": activity_url}
         else:
             try:
+                report_navigation("Direct URL · fallback" if selector_based else "Direct URL", f"Opening {tab_label}", (profile_activity_open_result.get("error") or "Profile activity could not be opened through DOM") if selector_based else "")
                 cdp.navigate(activity_url, wait_load=False, timeout=min(8, max(2, remaining())))
             except (TimeoutError, RuntimeError) as exc:
                 return timeout_result(tab_key, "navigation_failed_or_timed_out", error_detail=str(exc), profile_activity_open_result=profile_activity_open_result)

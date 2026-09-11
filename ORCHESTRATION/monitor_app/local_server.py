@@ -1943,7 +1943,7 @@ def invoke(channel: str, requested: Dict[str, Any]) -> Any:
         return read_obf_dashboard()
     if channel == "read-post-engagement-dashboard":
         value = read_post_engagement_dashboard(str(requested.get("day") or "") or None)
-        value["is_running"] = bool(
+        value["is_running"] = value.get("is_running", False) or bool(
             POST_ENGAGEMENT_ACTIVE_PROCESS
             and POST_ENGAGEMENT_ACTIVE_PROCESS.poll() is None
         )
