@@ -595,10 +595,50 @@ SOURCE_REACTOR_BOOTSTRAP_JS = r"""
   let dialog = all('dialog,[role="dialog"]').filter(visible).sort((a,b)=>b.getBoundingClientRect().height-a.getBoundingClientRect().height)[0];
   let trigger = null;
   if (!dialog) {
-    const reactionCount = text => { const others=text.match(/\b([\d,]+)\s+others?\s+reacted\b/i); if(others)return parseInt(others[1].replace(/,/g,''))+1; const direct=text.match(/\b([\d,]+)\s+reactions?\b/i); return direct?parseInt(direct[1].replace(/,/g,'')):0; };
-    const candidates = all('a,button,[role="button"]').filter(visible).map(el => ({el, text:(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim()})).filter(x => reactionCount(x.text)>0);
-    candidates.sort((a,b) => reactionCount(b.text)-reactionCount(a.text));
-    trigger = candidates[0]; if (!trigger) return JSON.stringify({success:false,error:'reaction_trigger_not_found'});
+    // 1. MAIN METHOD: Structural
+    const allEls = all('*');
+    const commentsEl = allEls.find(el => {
+      const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      return /^\d+\s+comments?/.test(t) && el.children.length === 0;
+    });
+    if (commentsEl) {
+      let container = commentsEl;
+      const commentsRect = commentsEl.getBoundingClientRect();
+      for (let i = 0; i < 20; i++) {
+        container = container.parentElement;
+        if (!container) break;
+        const clickables = Array.from(container.querySelectorAll('a, button, [role="button"]'))
+          .filter(visible)
+          .filter(el => {
+            if (el.contains(commentsEl)) return false;
+            if (!(el.compareDocumentPosition(commentsEl) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+            return Math.abs(el.getBoundingClientRect().top - commentsRect.top) < 20;
+          });
+        if (clickables.length > 0) { trigger = { el: clickables[0] }; break; }
+      }
+    }
+    // 2. FALLBACK 1: Exact LinkedIn DOM selectors
+    if (!trigger) {
+      const exactSelectors = ['button.social-details-social-counts__reactions-count', 'button.social-details-social-counts__count-value', 'li.social-details-social-counts__reactions button', 'li.social-details-social-counts__reactions a'];
+      for (const sel of exactSelectors) {
+        const found = all(sel).filter(visible);
+        if (found.length > 0) { trigger = { el: found[0] }; break; }
+      }
+    }
+    // 3. FALLBACK 2: Original Text Regex (Updated to include aria-label)
+    if (!trigger) {
+      const reactionCount = (text, aria) => { 
+        const full = (text + ' ' + (aria || '')).trim();
+        const others = full.match(/\b([\d,]+)\s+others?\s+reacted\b/i); 
+        if (others) return parseInt(others[1].replace(/,/g,'')) + 1; 
+        const direct = full.match(/\b([\d,]+)\s+reactions?\b/i); 
+        return direct ? parseInt(direct[1].replace(/,/g,'')) : 0; 
+      };
+      const candidates = all('a,button,[role="button"]').filter(visible).map(el => ({el, text: (el.innerText || el.textContent || '').replace(/\s+/g,' ').trim(), aria: el.getAttribute('aria-label') || ''})).filter(x => reactionCount(x.text, x.aria) > 0);
+      candidates.sort((a,b) => reactionCount(b.text, b.aria) - reactionCount(a.text, a.aria));
+      if (candidates.length > 0) trigger = { el: candidates[0].el };
+    }
+    if (!trigger) return JSON.stringify({success:false,error:'reaction_trigger_not_found'});
     trigger.el.click(); await sleep(1200);
     for(let waitPass=0; waitPass<30 && !dialog; waitPass++) { roots.splice(0); add(document); dialog = all('dialog,[role="dialog"]').filter(visible).sort((a,b)=>b.getBoundingClientRect().height-a.getBoundingClientRect().height)[0]; if(!dialog) await sleep(300); }
   }
