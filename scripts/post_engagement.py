@@ -54,6 +54,7 @@ def action_account() -> str:
     return ACTION_ACCOUNT.get() or load_config()["cdp_account"]
 
 
+# Study Map [3] — execution context & locking
 @contextmanager
 def campaign_lock():
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -68,6 +69,7 @@ def campaign_lock():
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+# Study Map [3] — execution context & locking
 def exclusive_campaign(function):
     @functools.wraps(function)
     def wrapped(*args, **kwargs):
@@ -84,6 +86,7 @@ def exclusive_campaign(function):
     return wrapped
 
 
+# Study Map [3] — execution context & locking
 def runner_active() -> bool:
     try:
         with campaign_lock():
@@ -92,6 +95,7 @@ def runner_active() -> bool:
         return True
 
 
+# Study Map [3] — execution context & locking
 def execution_event(campaign, candidate=None, *, action, method=None, reason=None):
     previous = campaign.get("execution", {})
     changed = candidate is not None and previous.get("profile_url") != candidate.get("profile_url")
@@ -122,6 +126,7 @@ DEFAULT_CONFIG = {
     "post_threshold": 3,
     "follower_connection_limit": 5000,
     "reactor_min_coverage": 0.9,
+    "source_collection_cap": 200,
     "source_collection_max_attempts": 3,
     "max_attempts": 4,
     "source_max_age_days": 5,
@@ -150,6 +155,7 @@ def now() -> datetime:
     return datetime.now(TZ)
 
 
+# Study Map [5] — generic state I/O
 def read_json(path: Path, fallback: Any) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else fallback
@@ -157,6 +163,7 @@ def read_json(path: Path, fallback: Any) -> Any:
         return fallback
 
 
+# Study Map [5] — generic state I/O
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False, encoding="utf-8") as handle:
@@ -167,6 +174,7 @@ def write_json(path: Path, value: Any) -> None:
     temp.replace(path)
 
 
+# Study Map [5] — generic state I/O
 def append_history(value: Dict[str, Any]) -> None:
     path = STATE_DIR / "navigation.jsonl" if value.get("type") in {"navigation", "navigation_failed"} else HISTORY_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,6 +187,7 @@ def read_daily_ledger() -> Dict[str, Any]:
     return value if isinstance(value, dict) and isinstance(value.get("events"), list) else {"events": []}
 
 
+# Study Map [6] — daily action ledger
 def ledger_has(day: str, action: str, profile_url: str, post_urn: str = "") -> bool:
     return any(
         event.get("day") == day
@@ -190,6 +199,7 @@ def ledger_has(day: str, action: str, profile_url: str, post_urn: str = "") -> b
     )
 
 
+# Study Map [6] — daily action ledger
 def record_ledger_action(day: str, action: str, profile_url: str, *, post_urn: str = "", campaign_id: str = "") -> None:
     if ledger_has(day, action, profile_url, post_urn):
         return
@@ -201,6 +211,7 @@ def record_ledger_action(day: str, action: str, profile_url: str, *, post_urn: s
     write_json(LEDGER_PATH, ledger)
 
 
+# Study Map [6] — daily action ledger
 def ledger_count(day: str, action: str) -> int:
     return sum(1 for event in read_daily_ledger()["events"] if event.get("day") == day and event.get("action") == action and event.get("account") == action_account())
 
@@ -210,6 +221,7 @@ def read_pending_actions() -> Dict[str, Any]:
     return value if isinstance(value, dict) and isinstance(value.get("actions"), list) else {"actions": []}
 
 
+# Study Map [7] — deferred final-actions queue
 def defer_final_action(candidate: Dict[str, Any], action: str, campaign: Dict[str, Any]) -> None:
     pending = read_pending_actions()
     profile_url = str(candidate.get("profile_url") or "")
@@ -221,6 +233,7 @@ def defer_final_action(candidate: Dict[str, Any], action: str, campaign: Dict[st
     write_json(PENDING_ACTIONS_PATH, pending)
 
 
+# Study Map [7] — deferred final-actions queue
 def resolve_deferred_action(action: str, profile_url: str) -> None:
     pending = read_pending_actions()
     remaining = [item for item in pending["actions"] if not (item.get("action") == action and item.get("profile_url") == profile_url and item.get("account") == action_account())]
@@ -233,6 +246,7 @@ def load_config() -> Dict[str, Any]:
     return {**DEFAULT_CONFIG, **read_json(CONFIG_PATH, {})}
 
 
+# Study Map [8] — config load/save
 @exclusive_campaign
 def save_config(requested: Dict[str, Any]) -> Dict[str, Any]:
     current = load_config()
@@ -259,6 +273,7 @@ def canonical_profile_url(value: str) -> str:
     return f"https://www.linkedin.com{match.group(1).rstrip('/')}/" if match else ""
 
 
+# Study Map [9] — parsing helpers
 def parse_relative_age_hours(value: str) -> Optional[float]:
     text = re.sub(r"[·•]", "", str(value or "").strip().lower())
     if text in {"now", "just now"}: return 0.0
@@ -271,6 +286,7 @@ def parse_relative_age_hours(value: str) -> Optional[float]:
     return amount / 60 if unit in {"m", "min"} else amount if unit in {"h", "hr"} else amount * 24 if unit in {"d", "day"} else amount * 168
 
 
+# Study Map [9] — parsing helpers
 def parse_follower_count(value: str) -> Optional[int]:
     text = str(value or "").lower().replace(",", "").strip()
     match = re.search(r"([\d.]+)\s*([km]?)\s+followers?", text)
@@ -279,6 +295,7 @@ def parse_follower_count(value: str) -> Optional[int]:
     return round(float(match.group(1)) * multiplier)
 
 
+# Study Map [9] — parsing helpers
 def validate_profile_gate(gate: Dict[str, Any]) -> None:
     """Reject global LinkedIn UI labels before they can affect ranking."""
     name = str(gate.get("name") or "").strip()
@@ -326,6 +343,7 @@ def daily_rng(day: str, salt: str) -> random.Random:
     return random.Random(int(digest[:16], 16))
 
 
+# Study Map [11] — deterministic randomness
 def choose_like_target(day: str, profile_url: str, config: Dict[str, Any]) -> int:
     choices = list(range(int(config["likes_min"]), int(config["likes_max"]) + 1))
     weights = list(config.get("like_weights") or [])[: len(choices)]
@@ -366,6 +384,7 @@ def ensure_engagement_batches(campaign: Dict[str, Any], config: Dict[str, Any]) 
     return batches
 
 
+# Study Map [12] — engagement batch planning
 def current_engagement_batch(campaign: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     batches = ensure_engagement_batches(campaign, config)
     for batch in batches:
@@ -411,6 +430,7 @@ def ensure_obf_diversions(campaign: Dict[str, Any], config: Dict[str, Any]) -> N
         )
 
 
+# Study Map [13] — OBF diversion bridge
 def run_obf_diversion(session: Any, candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Execute the same diversion primitives OBF uses, without changing outcome."""
     from linkedin_outreach_session import _run_diversion
@@ -449,6 +469,7 @@ def campaign_path(day: str) -> Path:
     return CAMPAIGNS_DIR / f"{day}.json"
 
 
+# Study Map [15] — campaign state
 def new_campaign(day: str, config: Dict[str, Any]) -> Dict[str, Any]:
     likes_used = ledger_count(day, "engagement")
     connections_used = ledger_count(day, "connect")
@@ -475,6 +496,7 @@ def new_campaign(day: str, config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Study Map [15] — campaign state
 def load_campaign(day: Optional[str] = None) -> Dict[str, Any]:
     selected = day or now().date().isoformat()
     config = load_config()
@@ -487,19 +509,23 @@ def load_campaign(day: Optional[str] = None) -> Dict[str, Any]:
     return value
 
 
+# Study Map [15] — campaign state
 def save_campaign(campaign: Dict[str, Any]) -> None:
     campaign["updated_at"] = now().isoformat()
     write_json(campaign_path(campaign["day"]), campaign)
 
 
+# Study Map [16] — control plane
 class PauseRequested(Exception):
     """Raised only at a durable workflow checkpoint."""
 
 
+# Study Map [16] — control plane
 def campaign_control(day: str) -> Dict[str, Any]:
     return read_json(CONTROL_PATH, {}).get(day, {})
 
 
+# Study Map [16] — control plane
 def pause_campaign(day: Optional[str] = None) -> Dict[str, Any]:
     campaign = load_campaign(day)
     controls = read_json(CONTROL_PATH, {})
@@ -513,6 +539,7 @@ def pause_campaign(day: Optional[str] = None) -> Dict[str, Any]:
     return campaign
 
 
+# Study Map [16] — control plane
 @exclusive_campaign
 def resume_campaign(day: Optional[str] = None) -> Dict[str, Any]:
     campaign = load_campaign(day)
@@ -525,6 +552,7 @@ def resume_campaign(day: Optional[str] = None) -> Dict[str, Any]:
     return campaign
 
 
+# Study Map [16] — control plane
 @exclusive_campaign
 def archive_and_start_fresh(day: Optional[str] = None, reason: str = "fresh_validation_run") -> Dict[str, Any]:
     """Archive a stopped campaign, seed the day ledger, and create a fresh active run."""
@@ -558,6 +586,7 @@ def archive_and_start_fresh(day: Optional[str] = None, reason: str = "fresh_vali
     return {"archived": campaign, "campaign": fresh, "daily_ledger": read_daily_ledger()}
 
 
+# Study Map [16] — control plane
 def raise_if_paused(campaign: Dict[str, Any]) -> None:
     if campaign_control(campaign["day"]).get("action") == "pause":
         raise PauseRequested()
@@ -756,6 +785,7 @@ POST_CARDS_JS = r"""
 """
 
 
+# Study Map [18] — browser primitives and payloads
 def _connect_campaign_browser(campaign: Dict[str, Any], config: Dict[str, Any], execute: bool) -> Any:
     from linkedin_helper import HumanSimulator, LinkedInSession, inject_stealth
     endpoint = CDP_ACCOUNTS[config["cdp_account"]]
@@ -777,6 +807,7 @@ def _connect_campaign_browser(campaign: Dict[str, Any], config: Dict[str, Any], 
     return cdp, simulator, session
 
 
+# Study Map [18] — browser primitives and payloads
 def _navigate(cdp: Any, url: str, settle: Optional[float] = None) -> None:
     """Use the shared readiness checks; deadlines are ceilings, not sleeps."""
     from linkedin_helper import _wait_for_linkedin_ready, _wait_for_activity_feed_state
@@ -889,12 +920,16 @@ def collect_sources(cdp: Any, campaign: Dict[str, Any], config: Dict[str, Any]) 
             save_campaign(campaign)
             continue
         expected = int(result.get("expected") or 0)
+        collection_cap = int(config.get("source_collection_cap", 200))
+        effective_target = min(expected, collection_cap) if expected else collection_cap
         found: Dict[str, Dict[str, Any]] = {}
         stagnant = 0
         passes = 0
+        retry_rounds = 0
+        max_retry_rounds = 3
         stop_reason = "pass_limit"
         collection_error = ""
-        while passes < 160 and stagnant < 5:
+        while passes < 160:
             passes += 1
             snapshot = _evaluate_json(cdp, SOURCE_REACTOR_SNAPSHOT_JS, timeout=12)
             if not snapshot.get("success"):
@@ -907,10 +942,20 @@ def collect_sources(cdp: Any, campaign: Dict[str, Any], config: Dict[str, Any]) 
                 if url: found[url] = {"url": url, "name": profile.get("name", "")}
             stagnant = stagnant + 1 if len(found) == before else 0
             expected = expected or int(snapshot.get("expected") or 0)
-            coverage = len(found) / expected if expected else 0
-            if expected and len(found) >= expected:
-                stop_reason = "exhausted"
+            effective_target = min(expected, collection_cap) if expected else collection_cap
+            if len(found) >= effective_target:
+                stop_reason = "cap_reached" if expected > collection_cap else "exhausted"
                 break
+            # Stagnation handling: pause and retry instead of giving up
+            if stagnant >= 5:
+                retry_rounds += 1
+                if retry_rounds >= max_retry_rounds:
+                    stop_reason = "stagnant"
+                    break
+                # Back off for 15-25 seconds, then resume scrolling
+                time.sleep(random.uniform(15, 25))
+                stagnant = 0
+                continue
             rect = snapshot.get("scroller") or {}
             # The modal shell can report a valid dialog for a few hundred ms
             # before LinkedIn mounts its virtualized scroll container. Do not
@@ -928,10 +973,11 @@ def collect_sources(cdp: Any, campaign: Dict[str, Any], config: Dict[str, Any]) 
                 stop_reason = "scroll_error"
                 break
             time.sleep(min(3, 0.7 + stagnant * 0.5))
-        if stagnant >= 5:
+        if stagnant >= 5 and stop_reason == "pass_limit":
             stop_reason = "stagnant"
-        source.update(stop_reason=stop_reason, extraction_error=collection_error, passes=passes, stagnant_passes=stagnant)
-        result.update(profiles=list(found.values()), profiles_collected=len(found), coverage=(len(found) / expected if expected else 0), expected=expected, passes=passes, stagnant_passes=stagnant)
+        coverage = len(found) / effective_target if effective_target else 0
+        source.update(stop_reason=stop_reason, extraction_error=collection_error, passes=passes, stagnant_passes=stagnant, retry_rounds=retry_rounds)
+        result.update(profiles=list(found.values()), profiles_collected=len(found), coverage=coverage, expected=expected, effective_target=effective_target, passes=passes, stagnant_passes=stagnant, retry_rounds=retry_rounds)
         try:
             _evaluate_json(cdp, "(() => { const b=Array.from(document.querySelectorAll('button')).find(x=>/dismiss/i.test(x.getAttribute('aria-label')||'')); if(b)b.click(); return true; })()", timeout=8)
         except Exception:
@@ -953,11 +999,14 @@ def collect_sources(cdp: Any, campaign: Dict[str, Any], config: Dict[str, Any]) 
             source.update(status="rejected_too_old", source_timestamp=result.get("source_timestamp", ""), source_age_hours=source_age)
             save_campaign(campaign)
             continue
-        source.update(resolved_url=result.get("resolved_url", ""), source_timestamp=result.get("source_timestamp", ""), source_age_hours=source_age, reaction_count=result.get("expected", 0), profiles_collected=result.get("profiles_collected", 0), coverage=round(float(result.get("coverage", 0)), 4), status="collected" if float(result.get("coverage", 0)) >= float(config["reactor_min_coverage"]) else "partial")
-        for profile in result.get("profiles", []):
-            url = canonical_profile_url(profile.get("url", ""))
-            if not url or url in known: continue
-            known.add(url); campaign["candidates"].append({"profile_url":url,"name":profile.get("name", ""),"source_post":source.get("resolved_url") or source["submitted_url"],"status":"discovered","attempts":0,"likes_assigned":choose_like_target(campaign["day"],url,config),"likes_completed":0})
+        coverage = round(float(result.get("coverage", 0)), 4)
+        is_collected = coverage >= float(config["reactor_min_coverage"])
+        source.update(resolved_url=result.get("resolved_url", ""), source_timestamp=result.get("source_timestamp", ""), source_age_hours=source_age, reaction_count=result.get("expected", 0), profiles_collected=result.get("profiles_collected", 0), coverage=coverage, status="collected" if is_collected else "rejected_partial")
+        if is_collected:
+            for profile in result.get("profiles", []):
+                url = canonical_profile_url(profile.get("url", ""))
+                if not url or url in known: continue
+                known.add(url); campaign["candidates"].append({"profile_url":url,"name":profile.get("name", ""),"source_post":source.get("resolved_url") or source["submitted_url"],"status":"discovered","attempts":0,"likes_assigned":choose_like_target(campaign["day"],url,config),"likes_completed":0})
         save_campaign(campaign)
 
 
@@ -981,6 +1030,7 @@ def review_recent_activity(cdp: Any, simulator: Any) -> Dict[str, int]:
     return {"before": before, "furthest": int(furthest.get("scrollTop", 0) or 0)}
 
 
+# Study Map [20] — profile review and inspection
 def inspect_candidate(cdp: Any, simulator: Any, candidate: Dict[str, Any], config: Dict[str, Any]) -> None:
     campaign = getattr(cdp, "engagement_campaign", None)
     if campaign is not None:
@@ -989,8 +1039,10 @@ def inspect_candidate(cdp: Any, simulator: Any, candidate: Dict[str, Any], confi
     gate = _evaluate_json(cdp, PROFILE_GATE_JS)
     validate_profile_gate(gate)
     followers = parse_follower_count(gate.get("follower_text", ""))
+    resolved_profile_url = canonical_profile_url(gate.get("page_url") or "") or candidate["profile_url"]
     candidate.update(
         gate,
+        profile_url=resolved_profile_url,
         follower_count=followers,
         profile_parser_version=PROFILE_PARSER_VERSION,
         profile_assessed_at=now().isoformat(),
@@ -1064,6 +1116,7 @@ def click_like(cdp: Any, urn: str) -> bool:
     return bool(result.get("liked"))
 
 
+# Study Map [21] — engagement actions
 def follow_current_profile(cdp: Any, name: str) -> bool:
     expression = """(() => { const wanted=%s.toLowerCase(); const b=Array.from(document.querySelectorAll('button')).find(x=>{const s=(x.getAttribute('aria-label')||x.innerText||'').trim().toLowerCase();return s.startsWith('follow')&&(wanted===''||s.includes(wanted));}); if(!b)return false;b.click();return true;})()""" % json.dumps(name)
     return bool(cdp.evaluate(expression, timeout=10))
@@ -1083,10 +1136,12 @@ def activity_counts(detail: Dict[str, Any], max_hours: float) -> Dict[str, int]:
     return counts
 
 
+# Study Map [22] — assessment, ranking and high-signal
 def qualifies(counts: Dict[str, int], config: Dict[str, Any]) -> bool:
     return counts.get("reactions", 0) >= int(config["reaction_threshold"]) or counts.get("comments", 0) >= int(config["comment_threshold"]) or counts.get("posts", 0) >= int(config["post_threshold"])
 
 
+# Study Map [22] — assessment, ranking and high-signal
 def recommendation_for(candidate: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     counts = candidate.get("activity_counts", {})
     if not qualifies(counts, config):
@@ -1106,6 +1161,7 @@ def recommendation_for(candidate: Dict[str, Any], config: Dict[str, Any]) -> Dic
     }
 
 
+# Study Map [22] — assessment, ranking and high-signal
 def assess_engaged_candidate(session: Any, candidate: Dict[str, Any], config: Dict[str, Any]) -> bool:
     """Perform the expensive activity review once, after Likes qualify a profile."""
     recommendation = candidate.get("recommendation") or {}
@@ -1151,6 +1207,7 @@ def assess_engaged_candidate(session: Any, candidate: Dict[str, Any], config: Di
             cdp.execution_observer = None
 
 
+# Study Map [22] — assessment, ranking and high-signal
 def final_action_queue(candidates: Iterable[Dict[str, Any]], campaign: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Interleave ranked Connect and Follow recommendations without scrambling rank."""
     eligible = [
@@ -1194,12 +1251,14 @@ def final_action_queue(candidates: Iterable[Dict[str, Any]], campaign: Dict[str,
     return queue
 
 
+# Study Map [22] — assessment, ranking and high-signal
 def ranking_key(candidate: Dict[str, Any]) -> tuple:
     counts = candidate.get("activity_counts", {})
     thresholds = (counts.get("reactions",0)>=5, counts.get("comments",0)>=3, counts.get("posts",0)>=3)
     return (int(candidate.get("geography_tier",4)), -sum(thresholds), -sum(counts.values()), candidate.get("newest_post_age_hours",10**9), candidate.get("profile_url",""))
 
 
+# Study Map [22] — assessment, ranking and high-signal
 def upsert_high_signal(candidate: Dict[str, Any]) -> None:
     state = read_json(HIGH_SIGNAL_PATH, {"profiles": []})
     rows = state.setdefault("profiles", [])
@@ -1221,6 +1280,7 @@ def begin_action(campaign, candidate, action, post_urn=""):
     save_campaign(campaign)
 
 
+# Study Map [23] — action execution and recovery
 def reconcile_campaign(campaign):
     """Recover confirmed writes; ambiguous clicks never become assumed success."""
     events = read_daily_ledger()["events"]
@@ -1541,6 +1601,7 @@ def run_campaign(day: Optional[str], execute: bool) -> Dict[str, Any]:
         if cdp: cdp.disconnect()
 
 
+# Study Map [24] — orchestration
 @exclusive_campaign
 def run_campaign_schedule(day: Optional[str], execute: bool) -> Dict[str, Any]:
     """Run live engagement windows through their persisted, pause-aware gaps."""
@@ -1575,6 +1636,7 @@ def dashboard(day: Optional[str] = None) -> Dict[str, Any]:
     return {"is_running": runner_active(), "config":config,"campaign":campaign,"control":campaign_control(campaign["day"]),"high_signal":read_json(HIGH_SIGNAL_PATH,{"profiles":[]}).get("profiles",[]),"history":list(reversed(history))}
 
 
+# Study Map [25] — dashboard read model and CLI
 def main() -> int:
     parser=argparse.ArgumentParser(); sub=parser.add_subparsers(dest="command",required=True)
     status=sub.add_parser("status"); status.add_argument("--day")
